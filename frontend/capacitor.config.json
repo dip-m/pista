@@ -1,0 +1,14 @@
+{
+  "appId": "com.pista.app",
+  "appName": "Pista",
+  "webDir": "build",
+  "bundledWebRuntime": false,
+  "server": {
+    "url": "http://localhost:3000",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}
+

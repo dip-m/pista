@@ -1,70 +1,101 @@
-# Getting Started with Create React App
+# Pista - Game Sommelier Frontend
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+A React application for the Pista game recommendation system.
 
-## Available Scripts
+## Project Structure
 
-In the project directory, you can run:
+```
+src/
+├── components/
+│   ├── features/      # Feature-specific components
+│   │   ├── Login.jsx
+│   │   ├── Profile.jsx
+│   │   └── PistaChat.jsx
+│   └── common/         # Shared/reusable components
+├── services/           # API services
+│   └── auth.js
+├── config/             # Configuration files
+│   └── api.js
+├── styles/             # CSS files
+│   └── index.css
+├── utils/              # Utility functions
+├── App.jsx
+└── index.js
+```
 
-### `npm start`
+## Environment Configuration
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+The app uses environment variables for configuration. Create a `.env` file in the root directory:
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+```
+REACT_APP_API_BASE_URL=http://localhost:8000
+```
 
-### `npm test`
+For production, set:
+```
+REACT_APP_API_BASE_URL=https://api.pista.com
+```
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## Development
 
-### `npm run build`
+```bash
+npm install
+npm start
+```
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+## Building for Production
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+```bash
+npm run build
+```
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+This creates an optimized production build in the `build/` directory.
 
-### `npm run eject`
+## Android Deployment
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+This project is configured for Android deployment using Capacitor.
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### Prerequisites
+- Android Studio
+- Java Development Kit (JDK)
+- Android SDK
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+### Setup
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+1. Install Capacitor CLI:
+```bash
+npm install -g @capacitor/cli
+```
 
-## Learn More
+2. Add Android platform:
+```bash
+npx cap add android
+```
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+3. Build the React app:
+```bash
+npm run build
+```
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+4. Sync with Capacitor:
+```bash
+npx cap sync android
+```
 
-### Code Splitting
+5. Open in Android Studio:
+```bash
+npx cap open android
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+### Building APK
 
-### Analyzing the Bundle Size
+1. Open the project in Android Studio
+2. Build > Generate Signed Bundle / APK
+3. Follow the wizard to create your release APK
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+## Configuration
 
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+- API base URL is configured in `src/config/api.js`
+- Environment variables are loaded from `.env` files
+- Android configuration is in `android/` directory
+- Capacitor configuration is in `capacitor.config.json`

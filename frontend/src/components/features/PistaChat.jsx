@@ -1,8 +1,7 @@
-// frontend/src/components/PistaChat.jsx
+// frontend/src/components/features/PistaChat.jsx
 import React, { useState, useEffect, useCallback } from "react";
-import { authService } from "../auth";
-
-const API_BASE = "http://localhost:8000";
+import { authService } from "../../services/auth";
+import { API_BASE } from "../../config/api";
 
 function PistaChat({ user }) {
   const [messages, setMessages] = useState([]);

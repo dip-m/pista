@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from "react-router-dom";
-import PistaChat from "./components/PistaChat";
-import Profile from "./components/Profile";
-import Login from "./components/Login";
-import { authService } from "./auth";
-import "./components/index.css";
+import PistaChat from "./components/features/PistaChat";
+import Profile from "./components/features/Profile";
+import Login from "./components/features/Login";
+import { authService } from "./services/auth";
+import "./styles/index.css";
 
 function App() {
   const [user, setUser] = useState(null);

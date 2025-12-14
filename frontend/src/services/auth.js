@@ -1,5 +1,5 @@
-// frontend/src/auth.js
-const API_BASE = "http://localhost:8000";
+// frontend/src/services/auth.js
+import { API_BASE } from "../config/api";
 
 export const authService = {
   getToken() {

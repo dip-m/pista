@@ -1,6 +1,6 @@
-// frontend/src/components/Login.jsx
+// frontend/src/components/features/Login.jsx
 import React, { useState } from "react";
-import { authService } from "../auth";
+import { authService } from "../../services/auth";
 
 function Login({ onLogin }) {
   const [isRegister, setIsRegister] = useState(false);
