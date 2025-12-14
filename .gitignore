@@ -1,0 +1,9 @@
+/.cursor
+/.vs
+/__pycache__
+/backend/__pycache__
+/update_utils/__pycache__
+/logs
+name_id_map.json
+/gen
+/ext_resources

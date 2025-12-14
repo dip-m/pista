@@ -1,0 +1,16 @@
+requests
+tqdm
+sentence-transformers
+numpy
+faiss-cpu
+fastapi 
+uvicorn[standard]
+PyJWT
+python-multipart
+Pillow
+opencv-python
+ultralytics
+pytesseract
+openai
+replicate
+
