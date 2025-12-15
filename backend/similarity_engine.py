@@ -1,6 +1,7 @@
 # similarity_engine.py
 import json
 from typing import List, Dict, Any, Optional, Set
+import os
 
 import numpy as np
 import faiss
@@ -113,6 +114,7 @@ class SimilarityEngine:
                 idxs = idxs[0]
                 # Convert index positions to game IDs
                 idxs = [self.id_map[ix] if 0 <= ix < len(self.id_map) else -1 for ix in idxs]
+                
 
             if explain:
                 try:
@@ -127,6 +129,7 @@ class SimilarityEngine:
         results: List[Dict[str, Any]] = []
         total_candidates = 0
         filtered_out = {"invalid_index": 0, "self_excluded": 0, "not_in_allowed": 0, "failed_explain": 0}
+        
         
         for sim, gid_or_ix in zip(sims, idxs):
             total_candidates += 1
@@ -146,9 +149,9 @@ class SimilarityEngine:
                 # "Closest in my collection" = just pass allowed_ids=user_collection_ids
                 continue
 
-            # Fetch additional game data including num_ratings, ranks_json, year_published for reordering
+            # Fetch additional game data including num_ratings, ranks_json, year_published, polls_json for reordering
             cur = self.conn.execute(
-                "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published FROM games WHERE id = ?",
+                "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json FROM games WHERE id = ?",
                 (gid,)
             )
             game_row = cur.fetchone()
@@ -158,6 +161,7 @@ class SimilarityEngine:
             num_ratings = int(game_row[3]) if game_row and game_row[3] is not None else 0
             ranks_json_str = game_row[4] if game_row and game_row[4] else None
             year_published = int(game_row[5]) if game_row and game_row[5] is not None else None
+            polls_json_str = game_row[6] if game_row and game_row[6] else None
             
             # Parse ranks_json to get best rank (overall, or category-specific)
             rank = None
@@ -202,15 +206,50 @@ class SimilarityEngine:
                     logger.debug(f"Error parsing ranks_json for game {gid}: {e}")
                     pass
             
+            # Parse polls_json to get language_dependence
+            language_dependence = None
+            if polls_json_str:
+                try:
+                    polls_data = json.loads(polls_json_str)
+                    language_dep = polls_data.get("language_dependence", {})
+                    if isinstance(language_dep, dict):
+                        language_results = language_dep.get("results", [])  # Fixed: renamed to avoid shadowing outer 'results'
+                        # Find the level with most votes
+                        max_votes = 0
+                        for result in language_results:
+                            if isinstance(result, dict):
+                                level = result.get("level")
+                                numvotes = result.get("numvotes", 0)
+                                if level and numvotes > max_votes:
+                                    max_votes = numvotes
+                                    try:
+                                        level_num = int(level)
+                                        value = result.get("value", "")
+                                        language_dependence = {
+                                            "level": level_num,
+                                            "value": value,
+                                            "numvotes": numvotes
+                                        }
+                                    except (ValueError, TypeError):
+                                        pass
+                except (json.JSONDecodeError, KeyError, TypeError) as e:
+                    logger.debug(f"Error parsing polls_json for game {gid}: {e}")
+                    pass
+            
+            # Ensure we have at least a name and game_id
+            if not game_name:
+                game_name = self._fetch_name(gid)
+            
             record: Dict[str, Any] = {
                 "game_id": gid,
-                "name": game_name,
+                "name": game_name or f"Game {gid}",
                 "thumbnail": thumbnail,
                 "average_rating": average_rating,
                 "num_ratings": num_ratings,
                 "rank": rank,
                 "year_published": year_published,
-                "embedding_similarity": float(sim),
+                "embedding_similarity": float(sim) if sim is not None else 0.0,
+                "language_dependence": language_dependence,
             }
 
             if explain:
@@ -241,7 +280,12 @@ class SimilarityEngine:
                     final_score = 0.8 * record["embedding_similarity"] + 0.2 * meta_score
                     record["meta_similarity_score"] = meta_score
                     record["final_score"] = final_score
+                    # Save game_id before update to prevent overwriting
+                    saved_game_id = record.get("game_id")
                     record.update(overlaps)
+                    # Restore game_id if it was overwritten
+                    if "game_id" not in record or record.get("game_id") != saved_game_id:
+                        record["game_id"] = saved_game_id
                     record["reason_summary"] = build_reason_summary(base_features, overlaps)
                 except Exception as e:
                     logger.warning(f"Error processing game {gid} in explain mode: {e}")
@@ -282,7 +326,12 @@ class SimilarityEngine:
             return base_score + ratings_weight + rank_weight + year_weight
         
         # Sort by weighted score
-        results.sort(key=calculate_weighted_score, reverse=True)
+        try:
+            results.sort(key=calculate_weighted_score, reverse=True)
+        except Exception as e:
+            logger.error(f"Error sorting results: {e}", exc_info=True)
+            # Fallback: sort by embedding similarity
+            results.sort(key=lambda r: r.get("embedding_similarity", 0.0), reverse=True)
         
         # Return top_k after reordering
         return results[:top_k]

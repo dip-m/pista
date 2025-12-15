@@ -31,10 +31,10 @@ function PistaChat({ user }) {
   const [chatHistory, setChatHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const [gameSearchQuery, setGameSearchQuery] = useState("");
   const [gameSearchResults, setGameSearchResults] = useState([]);
   const [showGameSearch, setShowGameSearch] = useState(false);
-  const [gameSearchEnabled, setGameSearchEnabled] = useState(false);
+  const [atMentionActive, setAtMentionActive] = useState(false);
+  const [atMentionPosition, setAtMentionPosition] = useState(0);
   const [marketplaceGame, setMarketplaceGame] = useState(null);
 
   const loadChatHistory = useCallback(async () => {
@@ -61,9 +61,9 @@ function PistaChat({ user }) {
   }, [loadChatHistory, user]);
 
   const handleGameSearch = async (query) => {
-    setGameSearchQuery(query);
     if (query.length < 2) {
       setGameSearchResults([]);
+      setShowGameSearch(false);
       return;
     }
     try {
@@ -76,6 +76,85 @@ function PistaChat({ user }) {
     } catch (err) {
       console.error("Game search failed:", err);
     }
+  };
+
+  // Handle @ mention in input
+  const handleInputChange = (e) => {
+    const value = e.target.value;
+    const cursorPos = e.target.selectionStart || 0;
+    setInput(value);
+    setCursorPosition(cursorPos);
+
+    // Check for @ mention
+    const textBeforeCursor = value.substring(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+    
+    if (lastAtIndex !== -1) {
+      // Check if @ is not part of an email or already completed mention
+      const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
+      // Check if there's a space or newline after @ (mention completed)
+      const hasSpaceAfterAt = textAfterAt.includes(' ') || textAfterAt.includes('\n');
+      // Simple check: if @ is followed by alphanumeric and no space, it's an active mention
+      const isActiveMention = /^[a-zA-Z0-9]*$/.test(textAfterAt) && !hasSpaceAfterAt;
+      
+      if (isActiveMention) {
+        // @ mention is active
+        const query = textAfterAt;
+        setAtMentionActive(true);
+        setAtMentionPosition(lastAtIndex);
+        if (query.length >= 2) {
+          handleGameSearch(query);
+        } else {
+          setShowGameSearch(false);
+          setGameSearchResults([]);
+        }
+      } else {
+        setAtMentionActive(false);
+        setShowGameSearch(false);
+        setGameSearchResults([]);
+      }
+    } else {
+      setAtMentionActive(false);
+      setShowGameSearch(false);
+      setGameSearchResults([]);
+    }
+  };
+
+  const handleGameSelectFromMention = (game) => {
+    if (!inputRef) return;
+    
+    // Find the @ position and query text
+    const currentInput = input;
+    const textBeforeAt = currentInput.substring(0, atMentionPosition);
+    // Find where the query ends (space, end of string, or cursor position)
+    const textAfterAt = currentInput.substring(atMentionPosition + 1);
+    const queryEndMatch = textAfterAt.match(/^[^\s]*/);
+    const queryEnd = queryEndMatch ? queryEndMatch[0].length : 0;
+    const textAfterQuery = currentInput.substring(atMentionPosition + 1 + queryEnd);
+    
+    // Replace @query with game name
+    const newText = textBeforeAt + game.name + " " + textAfterQuery;
+    setInput(newText);
+    
+    // Add game to chips if not already present
+    if (!gameChips.find(g => g.id === game.id)) {
+      setGameChips([...gameChips, game]);
+    }
+    
+    // Reset mention state
+    setAtMentionActive(false);
+    setShowGameSearch(false);
+    setGameSearchResults([]);
+    
+    // Set cursor position after inserted game name
+    setTimeout(() => {
+      if (inputRef) {
+        const newPos = textBeforeAt.length + game.name.length + 1;
+        inputRef.setSelectionRange(newPos, newPos);
+        setCursorPosition(newPos);
+        inputRef.focus();
+      }
+    }, 0);
   };
 
   // Insert text at cursor position
@@ -96,15 +175,18 @@ function PistaChat({ user }) {
   };
 
   const selectGame = (game) => {
-    // Add game to chips if not already present
-    if (!gameChips.find(g => g.id === game.id)) {
-      setGameChips([...gameChips, game]);
+    if (atMentionActive) {
+      handleGameSelectFromMention(game);
+    } else {
+      // Add game to chips if not already present
+      if (!gameChips.find(g => g.id === game.id)) {
+        setGameChips([...gameChips, game]);
+      }
+      setGameSearchResults([]);
+      setShowGameSearch(false);
+      // Insert game name at cursor position
+      insertTextAtCursor(game.name + " ");
     }
-    setGameSearchQuery("");
-    setGameSearchResults([]);
-    setShowGameSearch(false);
-    // Insert game name at cursor position
-    insertTextAtCursor(game.name + " ");
   };
 
   const removeGameChip = (gameId) => {
@@ -215,6 +297,17 @@ function PistaChat({ user }) {
         }),
       });
 
+      if (!res.ok) {
+        let errorMessage = "Failed to send message";
+        try {
+          const errorData = await res.json();
+          errorMessage = errorData.detail || errorMessage;
+        } catch {
+          errorMessage = `Server error: ${res.status} ${res.statusText}`;
+        }
+        throw new Error(errorMessage);
+      }
+
       const data = await res.json();
 
       const botMsg = {
@@ -231,7 +324,6 @@ function PistaChat({ user }) {
       // Keep prompt chips and player chips too for context
       // setPromptChips([]); // Keep for context
       // setPlayerChips([]); // Keep for context
-      setGameSearchQuery("");
 
       // Update thread ID if this was a new thread
       if (data.thread_id && !threadId && user) {
@@ -253,7 +345,7 @@ function PistaChat({ user }) {
       }
     } catch (err) {
       console.error("Failed to send message:", err);
-      alert("Failed to send message. Please try again.");
+      alert(err.message || "Failed to send message. Please try again.");
     }
   };
 
@@ -371,23 +463,6 @@ function PistaChat({ user }) {
               In my collection
             </label>
           </div>
-          <div className="chip toggle">
-            <label>
-              <input
-                type="checkbox"
-                checked={gameSearchEnabled}
-                onChange={(e) => {
-                  setGameSearchEnabled(e.target.checked);
-                  if (!e.target.checked) {
-                    setGameSearchQuery("");
-                    setGameSearchResults([]);
-                    setShowGameSearch(false);
-                  }
-                }}
-              />
-              🔍 Game Search
-            </label>
-          </div>
           <div className="common-prompts">
             {COMMON_PROMPTS.filter(p => !promptChips.includes(p)).map((prompt) => (
               <button
@@ -414,31 +489,20 @@ function PistaChat({ user }) {
           </div>
         </div>
 
-        <div className="chat-input-container">
-          {gameSearchEnabled && (
-            <div className="game-search-container">
-              <input
-                type="text"
-                placeholder="Search for a game to add to context..."
-                value={gameSearchQuery}
-                onChange={(e) => handleGameSearch(e.target.value)}
-                onFocus={() => gameSearchQuery.length >= 2 && setShowGameSearch(true)}
-                className="game-search-input"
-              />
-              {showGameSearch && gameSearchResults.length > 0 && (
-                <div className="game-search-dropdown">
-                  {gameSearchResults.map((game) => (
-                    <div
-                      key={game.id}
-                      className="game-search-item"
-                      onClick={() => selectGame(game)}
-                    >
-                      {game.name}
-                      {game.year_published && ` (${game.year_published})`}
-                    </div>
-                  ))}
+        <div className="chat-input-container" style={{ position: "relative" }}>
+          {/* Game search dropdown for @ mentions */}
+          {atMentionActive && showGameSearch && gameSearchResults.length > 0 && (
+            <div className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000 }}>
+              {gameSearchResults.map((game) => (
+                <div
+                  key={game.id}
+                  className="game-search-item"
+                  onClick={() => selectGame(game)}
+                >
+                  {game.name}
+                  {game.year_published && ` (${game.year_published})`}
                 </div>
-              )}
+              ))}
             </div>
           )}
           <div className="chat-input-row">
@@ -492,10 +556,7 @@ function PistaChat({ user }) {
             <input
               ref={setInputRef}
               value={input}
-              onChange={(e) => {
-                setInput(e.target.value);
-                setCursorPosition(e.target.selectionStart || 0);
-              }}
+              onChange={handleInputChange}
               onSelect={(e) => {
                 setCursorPosition(e.target.selectionStart || 0);
               }}
@@ -505,8 +566,15 @@ function PistaChat({ user }) {
               onKeyUp={(e) => {
                 setCursorPosition(e.target.selectionStart || 0);
               }}
-              placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Ask: 'Games in my collection closest to Brass: Birmingham but different theme'"}
-              onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !atMentionActive) {
+                  sendMessage();
+                } else if (e.key === "Escape") {
+                  setAtMentionActive(false);
+                  setShowGameSearch(false);
+                }
+              }}
+              placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Type @ to search for games, or ask: 'Games in my collection closest to Brass: Birmingham but different theme'"}
             />
             <button onClick={sendMessage}>Send</button>
           </div>
@@ -622,9 +690,15 @@ function MessageList({ messages, onGameClick }) {
 }
 
 function GameResultList({ results, onGameClick }) {
+  if (!results || results.length === 0) {
+    return null;
+  }
+  
   return (
     <div className="game-results">
-      {results.map((r) => (
+      {results
+        .filter(r => r && r.game_id) // Filter out invalid results
+        .map((r) => (
         <div 
           className="game-card" 
           key={r.game_id}
@@ -635,33 +709,48 @@ function GameResultList({ results, onGameClick }) {
             {r.thumbnail && (
               <img 
                 src={r.thumbnail} 
-                alt={r.name}
+                alt={r.name || "Game"}
                 style={{ width: "80px", height: "80px", objectFit: "cover", borderRadius: "4px" }}
               />
             )}
             <div style={{ flex: 1 }}>
-              <div className="game-card__title">{r.name}</div>
+              <div className="game-card__title">{r.name || `Game ${r.game_id}`}</div>
               {r.reason_summary && (
                 <div className="game-card__reason">{r.reason_summary}</div>
               )}
               <div className="game-card__meta">
                 <span>
                   Similarity:{" "}
-                  {r.final_score !== undefined
+                  {r.final_score !== undefined && r.final_score !== null
                     ? r.final_score.toFixed(2)
-                    : (r.embedding_similarity !== undefined ? r.embedding_similarity.toFixed(2) : "N/A")}
+                    : (r.embedding_similarity !== undefined && r.embedding_similarity !== null
+                        ? r.embedding_similarity.toFixed(2)
+                        : "N/A")}
                 </span>
                 {r.average_rating && (
                   <span style={{ marginLeft: "1rem" }}>
-                    ⭐ {r.average_rating.toFixed(1)}
+                    ⭐ {typeof r.average_rating === 'number' ? r.average_rating.toFixed(1) : r.average_rating}
                     {r.num_ratings && (
                       <span style={{ marginLeft: "0.5rem", opacity: 0.7, fontSize: "0.9em" }}>
-                        ({r.num_ratings.toLocaleString()})
+                        ({typeof r.num_ratings === 'number' ? r.num_ratings.toLocaleString() : r.num_ratings})
                       </span>
                     )}
                   </span>
                 )}
               </div>
+              {r.language_dependence && r.language_dependence.level >= 4 && (
+                <div style={{ 
+                  marginTop: "0.5rem", 
+                  padding: "0.5rem", 
+                  backgroundColor: "#fff3cd", 
+                  border: "1px solid #ffc107",
+                  borderRadius: "4px",
+                  fontSize: "0.9em",
+                  color: "#856404"
+                }}>
+                  ⚠️ High language dependence (Level {r.language_dependence.level}): {r.language_dependence.value || "Extensive use of text"}
+                </div>
+              )}
             </div>
           </div>
         </div>
