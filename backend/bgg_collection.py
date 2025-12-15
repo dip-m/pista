@@ -30,10 +30,10 @@ def _rate_limit():
         _last_request_time = time.time()
 
 
-def fetch_user_collection(bgg_user_id: str) -> List[int]:
+def fetch_user_collection(bgg_user_id: str) -> List[Dict[str, Any]]:
     """
-    Fetch a user's collection from BGG API.
-    Returns list of game IDs (BGG IDs).
+    Fetch a user's collection from BGG API with personal ratings.
+    Returns list of dicts with game_id and personal_rating.
     """
     logger.info(f"Fetching BGG collection for user: {bgg_user_id}")
     
@@ -74,17 +74,41 @@ def fetch_user_collection(bgg_user_id: str) -> List[int]:
                 logger.error(f"Failed to parse BGG XML: {e}")
                 raise
             
-            game_ids = []
+            games = []
             for item in root.findall("item"):
                 game_id = item.get("objectid")
-                if game_id:
-                    try:
-                        game_ids.append(int(game_id))
-                    except ValueError:
-                        logger.debug(f"Invalid game_id: {game_id}")
+                if not game_id:
+                    continue
+                
+                try:
+                    game_id_int = int(game_id)
+                except ValueError:
+                    logger.debug(f"Invalid game_id: {game_id}")
+                    continue
+                
+                # Extract personal rating from stats/rating/value
+                personal_rating = None
+                stats = item.find("stats")
+                if stats is not None:
+                    rating = stats.find("rating")
+                    if rating is not None:
+                        value_elem = rating.find("value")
+                        if value_elem is not None and value_elem.text:
+                            try:
+                                # BGG ratings are stored as strings, "N/A" if not rated
+                                rating_str = value_elem.text.strip()
+                                if rating_str and rating_str != "N/A":
+                                    personal_rating = float(rating_str)
+                            except (ValueError, AttributeError):
+                                pass
+                
+                games.append({
+                    "game_id": game_id_int,
+                    "personal_rating": personal_rating
+                })
             
-            logger.info(f"Fetched {len(game_ids)} games from BGG collection for user {bgg_user_id}")
-            return game_ids
+            logger.info(f"Fetched {len(games)} games from BGG collection for user {bgg_user_id}")
+            return games
             
         except requests.RequestException as e:
             logger.warning(f"Request error fetching BGG collection (attempt {attempt + 1}): {e}")

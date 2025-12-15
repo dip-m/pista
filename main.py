@@ -412,14 +412,29 @@ def import_bgg_collection(current_user: Dict[str, Any] = Depends(get_current_use
     logger.info(f"Importing BGG collection for user {current_user['id']} (BGG ID: {current_user['bgg_id']})")
     
     try:
-        game_ids = fetch_user_collection(str(current_user["bgg_id"]))
-        logger.info(f"Fetched {len(game_ids)} games from BGG")
+        # Ensure personal_rating column exists
+        try:
+            cur = ENGINE_CONN.execute("PRAGMA table_info(user_collections)")
+            columns = [row[1] for row in cur.fetchall()]
+            if "personal_rating" not in columns:
+                ENGINE_CONN.execute("ALTER TABLE user_collections ADD COLUMN personal_rating REAL")
+                ENGINE_CONN.commit()
+                logger.info("Added personal_rating column to user_collections table")
+        except sqlite3.Error as e:
+            logger.warning(f"Error checking/adding personal_rating column: {e}")
+        
+        games_data = fetch_user_collection(str(current_user["bgg_id"]))
+        logger.info(f"Fetched {len(games_data)} games from BGG")
         
         # Verify games exist in our DB and add to collection
         added_count = 0
         skipped_count = 0
+        updated_count = 0
         
-        for game_id in game_ids:
+        for game_data in games_data:
+            game_id = game_data["game_id"]
+            personal_rating = game_data.get("personal_rating")
+            
             # Check if game exists in DB
             cur = ENGINE_CONN.execute("SELECT id FROM games WHERE id = ?", (game_id,))
             if not cur.fetchone():
@@ -427,25 +442,45 @@ def import_bgg_collection(current_user: Dict[str, Any] = Depends(get_current_use
                 skipped_count += 1
                 continue
             
-            # Add to collection (ignore if already exists)
-            try:
-                ENGINE_CONN.execute(
-                    "INSERT OR IGNORE INTO user_collections (user_id, game_id) VALUES (?, ?)",
-                    (current_user["id"], game_id)
-                )
-                added_count += 1
-            except sqlite3.Error as e:
-                logger.warning(f"Error adding game {game_id} to collection: {e}")
-                skipped_count += 1
+            # Check if already in collection
+            cur = ENGINE_CONN.execute(
+                "SELECT personal_rating FROM user_collections WHERE user_id = ? AND game_id = ?",
+                (current_user["id"], game_id)
+            )
+            existing = cur.fetchone()
+            
+            if existing:
+                # Update with new rating if provided
+                if personal_rating is not None:
+                    try:
+                        ENGINE_CONN.execute(
+                            "UPDATE user_collections SET personal_rating = ? WHERE user_id = ? AND game_id = ?",
+                            (personal_rating, current_user["id"], game_id)
+                        )
+                        updated_count += 1
+                    except sqlite3.Error as e:
+                        logger.warning(f"Error updating game {game_id} rating: {e}")
+            else:
+                # Add to collection with rating
+                try:
+                    ENGINE_CONN.execute(
+                        "INSERT INTO user_collections (user_id, game_id, personal_rating) VALUES (?, ?, ?)",
+                        (current_user["id"], game_id, personal_rating)
+                    )
+                    added_count += 1
+                except sqlite3.Error as e:
+                    logger.warning(f"Error adding game {game_id} to collection: {e}")
+                    skipped_count += 1
         
         ENGINE_CONN.commit()
-        logger.info(f"Collection import complete: {added_count} added, {skipped_count} skipped")
+        logger.info(f"Collection import complete: {added_count} added, {updated_count} updated, {skipped_count} skipped")
         
         return {
             "success": True,
             "added": added_count,
+            "updated": updated_count,
             "skipped": skipped_count,
-            "total_fetched": len(game_ids)
+            "total_fetched": len(games_data)
         }
     except Exception as e:
         logger.error(f"Error importing BGG collection: {e}", exc_info=True)
@@ -731,16 +766,40 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
             reply_text = f"I couldn't find any games matching those filters.{excluded_text}"
 
     elif intent == "compare_pair":
-        a = query_spec["game_a_id"]
-        b = query_spec["game_b_id"]
-        # compare_two_games implementation as before
-        cmp_result = compare_two_games(ENGINE, a, b)
-        results = [cmp_result]
-        reply_text = (
-            f"Here's how those two games relate based on mechanics, theme and metadata.\n"
-            f"Similarity score: {cmp_result['meta_score']:.2f}\n"
-            f"{cmp_result['reason_summary']}"
-        )
+        a = query_spec.get("game_a_id")
+        b = query_spec.get("game_b_id")
+        if not a or not b:
+            reply_text = "I need two games to compare. Please specify both games."
+            results = []
+        else:
+            # Get game names for display
+            cur = ENGINE_CONN.execute("SELECT name FROM games WHERE id IN (?, ?)", (a, b))
+            game_names = {row[0]: row[0] for row in cur.fetchall()}
+            cur = ENGINE_CONN.execute("SELECT id, name FROM games WHERE id IN (?, ?)", (a, b))
+            game_info = {row[0]: row[1] for row in cur.fetchall()}
+            game_a_name = game_info.get(a, f"Game {a}")
+            game_b_name = game_info.get(b, f"Game {b}")
+            
+            # compare_two_games implementation as before
+            cmp_result = compare_two_games(ENGINE, a, b)
+            # Format result for frontend (add game names and ensure all fields exist)
+            result_dict = {
+                "game_id": a,  # Use first game as primary
+                "name": f"{game_a_name} vs {game_b_name}",
+                "game_a_id": a,
+                "game_b_id": b,
+                "meta_score": cmp_result.get("meta_score", 0.0),
+                "final_score": cmp_result.get("meta_score", 0.0),
+                "embedding_similarity": cmp_result.get("meta_score", 0.0),  # Use meta_score as similarity
+                "reason_summary": cmp_result.get("reason_summary", "Comparison completed"),
+                "overlaps": cmp_result.get("overlaps", {}),
+            }
+            results = [result_dict]
+            reply_text = (
+                f"Here's how {game_a_name} and {game_b_name} relate based on mechanics, theme and metadata.\n"
+                f"Similarity score: {cmp_result.get('meta_score', 0.0):.2f}\n"
+                f"{cmp_result.get('reason_summary', 'Comparison completed')}"
+            )
 
     # Save to chat history (only if authenticated)
     thread_id = req.thread_id

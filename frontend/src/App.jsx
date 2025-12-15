@@ -58,7 +58,7 @@ function App() {
       <div className="App">
         <nav className="app-nav">
           <div className="nav-brand">
-            <Link to="/">Pista - Game Sommelier</Link>
+            <Link to="/">Pista</Link>
           </div>
           <div className="nav-links">
             <Link to="/">Chat</Link>

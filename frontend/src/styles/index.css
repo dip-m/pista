@@ -489,8 +489,8 @@ body {
 
 .collection-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(105px, 1fr));
+  gap: 0.7rem;
 }
 
 .collection-tile {
@@ -510,7 +510,7 @@ body {
 
 .tile-image-container {
   width: 100%;
-  height: 120px;
+  height: 84px;
   overflow: hidden;
   background: #f5f5f5;
   display: flex;
@@ -530,15 +530,15 @@ body {
 }
 
 .tile-content {
-  padding: 0.75rem;
+  padding: 0.5rem;
 }
 
 .tile-name {
   font-weight: bold;
-  font-size: 0.9rem;
-  margin-bottom: 0.4rem;
+  font-size: 0.75rem;
+  margin-bottom: 0.3rem;
   color: #333;
-  line-height: 1.2;
+  line-height: 1.1;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -549,9 +549,9 @@ body {
 .tile-meta {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  margin-bottom: 0.4rem;
-  font-size: 0.75rem;
+  gap: 0.2rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.65rem;
 }
 
 .tile-rank {
@@ -641,6 +641,54 @@ body {
 
 .chip.toggle input[type="checkbox"] {
   cursor: pointer;
+}
+
+.chip.prompt-chip,
+.chip.game-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-right: 0.5rem;
+}
+
+.chip-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+  color: #666;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 0.2s;
+}
+
+.chip-remove:hover {
+  background: rgba(0, 0, 0, 0.1);
+  color: #000;
+}
+
+.prompt-button {
+  cursor: pointer;
+  border: 1px dashed #999;
+  background: #f9f9f9;
+}
+
+.prompt-button:hover {
+  background: #f0f0f0;
+  border-color: #666;
+}
+
+.common-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 /* Highlighting for similarity/dissimilarity */

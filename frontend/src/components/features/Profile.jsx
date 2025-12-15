@@ -10,7 +10,7 @@ function Profile({ user, onUserUpdate }) {
   const [loading, setLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [bggId, setBggId] = useState(user.bgg_id || ""); // Add local state for BGG ID
-  const [sortBy, setSortBy] = useState("added_at");
+  const [sortBy, setSortBy] = useState("year_published");
   const [sortOrder, setSortOrder] = useState("desc");
   const [collectionSearchQuery, setCollectionSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
@@ -346,22 +346,21 @@ function Profile({ user, onUserUpdate }) {
                     )}
                   </div>
                   <div className="tile-content">
-                    <div className="tile-name">{game.name}</div>
+                    <div className="tile-name">
+                      {game.name}
+                      {game.year_published && ` (${game.year_published})`}
+                    </div>
                     <div className="tile-meta">
-                      {game.average_rating && (
-                        <div className="tile-rating">
-                          ⭐ BGG: {game.average_rating.toFixed(2)}
-                        </div>
-                      )}
-                      {game.personal_rating && (
+                      {game.personal_rating ? (
                         <div className="tile-personal-rating">
                           💫 Personal: {game.personal_rating.toFixed(1)}
                         </div>
+                      ) : game.average_rating && (
+                        <div className="tile-rating">
+                          ⭐ BGG: {game.average_rating.toFixed(1)}
+                        </div>
                       )}
                     </div>
-                    {game.year_published && (
-                      <div className="tile-year">{game.year_published}</div>
-                    )}
                   </div>
                   <button
                     onClick={() => removeFromCollection(game.game_id)}

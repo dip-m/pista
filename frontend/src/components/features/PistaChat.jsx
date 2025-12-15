@@ -3,10 +3,24 @@ import React, { useState, useEffect, useCallback } from "react";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
 
+// Common prompts that can be used as chips
+const COMMON_PROMPTS = [
+  "Games similar to",
+  "Games different from",
+  "Compare",
+  "In my collection",
+  "Different theme",
+  "Same mechanics",
+];
+
 function PistaChat({ user }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [inputRef, setInputRef] = useState(null);
+  const [cursorPosition, setCursorPosition] = useState(0);
   const [chips, setChips] = useState([]);
+  const [promptChips, setPromptChips] = useState([]);
+  const [gameChips, setGameChips] = useState([]);
   const [useCollection, setUseCollection] = useState(false);
   const [threadId, setThreadId] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
@@ -14,7 +28,6 @@ function PistaChat({ user }) {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [gameSearchQuery, setGameSearchQuery] = useState("");
   const [gameSearchResults, setGameSearchResults] = useState([]);
-  const [selectedGame, setSelectedGame] = useState(null);
   const [showGameSearch, setShowGameSearch] = useState(false);
   const [gameSearchEnabled, setGameSearchEnabled] = useState(false);
 
@@ -59,17 +72,57 @@ function PistaChat({ user }) {
     }
   };
 
+  // Insert text at cursor position
+  const insertTextAtCursor = (text) => {
+    if (!inputRef) return;
+    const start = inputRef.selectionStart || cursorPosition;
+    const end = inputRef.selectionEnd || cursorPosition;
+    const newText = input.slice(0, start) + text + input.slice(end);
+    setInput(newText);
+    // Set cursor position after inserted text
+    setTimeout(() => {
+      if (inputRef) {
+        const newPos = start + text.length;
+        inputRef.setSelectionRange(newPos, newPos);
+        setCursorPosition(newPos);
+      }
+    }, 0);
+  };
+
   const selectGame = (game) => {
-    setSelectedGame(game);
+    // Add game to chips if not already present
+    if (!gameChips.find(g => g.id === game.id)) {
+      setGameChips([...gameChips, game]);
+    }
     setGameSearchQuery("");
     setGameSearchResults([]);
     setShowGameSearch(false);
-    // Add game name to input text
-    if (input.trim()) {
-      setInput(input + " " + game.name);
-    } else {
-      setInput(game.name);
+    // Insert game name at cursor position
+    insertTextAtCursor(game.name + " ");
+  };
+
+  const removeGameChip = (gameId) => {
+    setGameChips(gameChips.filter(g => g.id !== gameId));
+    // Remove game name from input if present
+    const game = gameChips.find(g => g.id === gameId);
+    if (game) {
+      const regex = new RegExp(`\\b${game.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+      setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
     }
+  };
+
+  const addPromptChip = (prompt) => {
+    if (!promptChips.includes(prompt)) {
+      setPromptChips([...promptChips, prompt]);
+      insertTextAtCursor(prompt + " ");
+    }
+  };
+
+  const removePromptChip = (prompt) => {
+    setPromptChips(promptChips.filter(p => p !== prompt));
+    // Remove prompt from input if present
+    const regex = new RegExp(`\\b${prompt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+    setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
   };
 
   const loadThread = async (threadIdToLoad) => {
@@ -97,6 +150,8 @@ function PistaChat({ user }) {
     setMessages([]);
     setThreadId(null);
     setChips([]);
+    setPromptChips([]);
+    setGameChips([]);
     setUseCollection(false);
   };
 
@@ -107,8 +162,9 @@ function PistaChat({ user }) {
     setMessages((prev) => [...prev, userMsg]);
 
     const context = {
-      last_game_id: null,
-      useCollection,
+      last_game_id: gameChips.length > 0 ? gameChips[0].id : null,
+      useCollection: useCollection,
+      selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
     };
     
     // If useCollection is checked, explicitly set scope in message
@@ -129,7 +185,7 @@ function PistaChat({ user }) {
           message: messageText,
           context,
           thread_id: threadId,
-          selected_game_id: selectedGame?.id || null,
+          selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
         }),
       });
 
@@ -144,7 +200,9 @@ function PistaChat({ user }) {
 
       setMessages((prev) => [...prev, botMsg]);
       setInput("");
-      setSelectedGame(null);
+      // Keep game chips for next query in the thread (don't clear them)
+      // setGameChips([]); // Removed - persist chips across messages
+      setPromptChips([]);
       setGameSearchQuery("");
 
       // Update thread ID if this was a new thread
@@ -223,6 +281,30 @@ function PistaChat({ user }) {
               {chip.facet}
             </div>
           ))}
+          {promptChips.map((prompt) => (
+            <div className="chip prompt-chip" key={prompt}>
+              {prompt}
+              <button
+                onClick={() => removePromptChip(prompt)}
+                className="chip-remove"
+                title="Remove prompt"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          {gameChips.map((game) => (
+            <div className="chip game-chip" key={game.id}>
+              🎮 {game.name}
+              <button
+                onClick={() => removeGameChip(game.id)}
+                className="chip-remove"
+                title="Remove game"
+              >
+                ×
+              </button>
+            </div>
+          ))}
           <div className="chip toggle">
             <label>
               <input
@@ -243,13 +325,24 @@ function PistaChat({ user }) {
                   if (!e.target.checked) {
                     setGameSearchQuery("");
                     setGameSearchResults([]);
-                    setSelectedGame(null);
                     setShowGameSearch(false);
                   }
                 }}
               />
               🔍 Game Search
             </label>
+          </div>
+          <div className="common-prompts">
+            {COMMON_PROMPTS.filter(p => !promptChips.includes(p)).map((prompt) => (
+              <button
+                key={prompt}
+                className="chip prompt-button"
+                onClick={() => addPromptChip(prompt)}
+                title="Add prompt"
+              >
+                + {prompt}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -280,28 +373,24 @@ function PistaChat({ user }) {
               )}
             </div>
           )}
-          {selectedGame && (
-            <div className="selected-game-chip" style={{ marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <span>🎮 {selectedGame.name}</span>
-              <button 
-                onClick={() => {
-                  setSelectedGame(null);
-                  // Remove game name from input if it's there
-                  if (input.includes(selectedGame.name)) {
-                    setInput(input.replace(selectedGame.name, "").trim());
-                  }
-                }} 
-                style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1.2em" }}
-              >
-                ×
-              </button>
-            </div>
-          )}
           <div className="chat-input-row">
             <input
+              ref={setInputRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={selectedGame ? `Ask about games similar to ${selectedGame.name}...` : "Ask: 'Games in my collection closest to Brass: Birmingham but different theme'"}
+              onChange={(e) => {
+                setInput(e.target.value);
+                setCursorPosition(e.target.selectionStart || 0);
+              }}
+              onSelect={(e) => {
+                setCursorPosition(e.target.selectionStart || 0);
+              }}
+              onClick={(e) => {
+                setCursorPosition(e.target.selectionStart || 0);
+              }}
+              onKeyUp={(e) => {
+                setCursorPosition(e.target.selectionStart || 0);
+              }}
+              placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Ask: 'Games in my collection closest to Brass: Birmingham but different theme'"}
               onKeyDown={(e) => e.key === "Enter" && sendMessage()}
             />
             <button onClick={sendMessage}>Send</button>
@@ -437,11 +526,11 @@ function GameResultList({ results }) {
                   Similarity:{" "}
                   {r.final_score !== undefined
                     ? r.final_score.toFixed(2)
-                    : r.embedding_similarity.toFixed(2)}
+                    : (r.embedding_similarity !== undefined ? r.embedding_similarity.toFixed(2) : "N/A")}
                 </span>
                 {r.average_rating && (
                   <span style={{ marginLeft: "1rem" }}>
-                    ⭐ {r.average_rating.toFixed(2)}
+                    ⭐ {r.average_rating.toFixed(1)}
                   </span>
                 )}
               </div>

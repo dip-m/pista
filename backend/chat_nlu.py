@@ -3,7 +3,10 @@
 import json
 import os
 import re
+import logging
 from typing import Dict, Any, Optional, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(__file__)
 NAME_MAP_PATH = os.path.join(BASE_DIR, "..", "name_id_map.json")
@@ -207,8 +210,6 @@ def interpret_message(
     else:
         base_game_id = last_game_id or 224517  # fallback: Brass: Birmingham
 
-    query_spec["base_game_id"] = base_game_id
-
     # If at least two games & language suggests comparison → compare_pair
     if len(candidates) >= 2 and ("compare" in text_l or "do i need" in text_l):
         query_spec["intent"] = "compare_pair"
@@ -216,11 +217,17 @@ def interpret_message(
         query_spec["game_b_id"] = candidates[1]["game_id"]
         return query_spec
 
+    # Set base_game_id in query_spec
+    query_spec["base_game_id"] = base_game_id
+
     # scope - check context first, then text
+    # Context useCollection takes priority
     if context and context.get("useCollection"):
         query_spec["scope"] = "user_collection"
+        logger.debug(f"Setting scope to user_collection from context.useCollection")
     elif "my collection" in text_l or "in my collection" in text_l:
         query_spec["scope"] = "user_collection"
+        logger.debug(f"Setting scope to user_collection from text")
 
     cons: Dict[str, Any] = {}
 
