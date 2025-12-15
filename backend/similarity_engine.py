@@ -149,9 +149,9 @@ class SimilarityEngine:
                 # "Closest in my collection" = just pass allowed_ids=user_collection_ids
                 continue
 
-            # Fetch additional game data including num_ratings, ranks_json, year_published, polls_json for reordering
+            # Fetch additional game data including num_ratings, ranks_json, year_published, polls_json, min_players, max_players for reordering
             cur = self.conn.execute(
-                "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json FROM games WHERE id = ?",
+                "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players FROM games WHERE id = ?",
                 (gid,)
             )
             game_row = cur.fetchone()
@@ -162,6 +162,18 @@ class SimilarityEngine:
             ranks_json_str = game_row[4] if game_row and game_row[4] else None
             year_published = int(game_row[5]) if game_row and game_row[5] is not None else None
             polls_json_str = game_row[6] if game_row and game_row[6] else None
+            min_players = int(game_row[7]) if game_row and game_row[7] is not None else None
+            max_players = int(game_row[8]) if game_row and game_row[8] is not None else None
+            
+            # Early exclusion: Check max_players constraint before expensive explain mode
+            player_constraints = constraints.get("players", {})
+            if player_constraints:
+                exact_players = player_constraints.get("exact")
+                if exact_players is not None and max_players is not None:
+                    # Exclude if game's max_players is less than required player count
+                    if max_players < exact_players:
+                        filtered_out["failed_explain"] += 1
+                        continue
             
             # Parse ranks_json to get best rank (overall, or category-specific)
             rank = None
@@ -273,6 +285,11 @@ class SimilarityEngine:
                         logger.debug(f"Game {gid} doesn't satisfy player constraints")
                         continue
                     
+                    # Check playtime constraints
+                    if not self._satisfies_playtime_constraints(gid, constraints):
+                        logger.debug(f"Game {gid} doesn't satisfy playtime constraints")
+                        continue
+                    
                     # apply generic constraints
                     if not self._satisfies_constraints(scores, overlaps, constraints):
                         continue
@@ -359,11 +376,29 @@ class SimilarityEngine:
         
         # Check exact player count
         exact_players = player_constraints.get("exact")
+        use_recommended = player_constraints.get("use_recommended", False)
         if exact_players is not None:
-            if other_min is not None and other_max is not None:
+            # First check: max_players exclusion (already done early, but double-check here)
+            if other_max is not None and other_max < exact_players:
+                return False
+            # Second check: min_players (game must support at least this many)
+            if other_min is not None and other_min > exact_players:
+                return False
+            # Third check: If use_recommended is set, prefer recommended players from polls_json
+            if use_recommended and other_recommended:
+                if exact_players not in other_recommended:
+                    # Not in recommended, but still check if it's in the supported range
+                    if other_min is not None and other_max is not None:
+                        if not (other_min <= exact_players <= other_max):
+                            return False
+                    else:
+                        return False
+            elif other_min is not None and other_max is not None:
+                # Standard range check
                 if not (other_min <= exact_players <= other_max):
                     return False
-            elif exact_players not in other_recommended:
+            elif not other_recommended:
+                # No recommended players and no min/max, can't verify
                 return False
         
         # Check player count range overlap
@@ -387,6 +422,55 @@ class SimilarityEngine:
                 return False
         
         return True
+
+    def _satisfies_playtime_constraints(
+        self,
+        game_id: int,
+        constraints: Dict[str, Any],
+    ) -> bool:
+        """Check if playtime constraints are satisfied."""
+        playtime_constraints = constraints.get("playtime", {})
+        if not playtime_constraints:
+            return True
+        
+        target_playtime = playtime_constraints.get("target")
+        tolerance = playtime_constraints.get("tolerance", 0.3)
+        
+        if target_playtime is None:
+            return True
+        
+        # Fetch playing_time from database
+        cur = self.conn.execute(
+            "SELECT playing_time, min_playing_time, max_playing_time FROM games WHERE id = ?",
+            (game_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return True
+        
+        playing_time = int(row[0]) if row[0] is not None else None
+        min_playing_time = int(row[1]) if row[1] is not None else None
+        max_playing_time = int(row[2]) if row[2] is not None else None
+        
+        # Use playing_time if available, otherwise use min/max average
+        if playing_time is not None:
+            actual_time = playing_time
+        elif min_playing_time is not None and max_playing_time is not None:
+            actual_time = (min_playing_time + max_playing_time) / 2
+        elif min_playing_time is not None:
+            actual_time = min_playing_time
+        elif max_playing_time is not None:
+            actual_time = max_playing_time
+        else:
+            # No playtime data available, allow it
+            return True
+        
+        # Check if actual_time is within tolerance of target
+        tolerance_range = target_playtime * tolerance
+        min_time = target_playtime - tolerance_range
+        max_time = target_playtime + tolerance_range
+        
+        return min_time <= actual_time <= max_time
 
     def _satisfies_constraints(
         self,

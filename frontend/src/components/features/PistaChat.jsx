@@ -17,6 +17,17 @@ const COMMON_PROMPTS = [
 // Player count options for chips
 const PLAYER_COUNTS = [1, 2, 3, 4, 5, 6, 7, 8];
 
+// Playtime options for chips (in minutes)
+const PLAYTIME_OPTIONS = [
+  { label: "15 min", value: 15 },
+  { label: "30 min", value: 30 },
+  { label: "45 min", value: 45 },
+  { label: "1 hour", value: 60 },
+  { label: "1.5 hours", value: 90 },
+  { label: "2 hours", value: 120 },
+  { label: "3+ hours", value: 180 },
+];
+
 function PistaChat({ user }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -26,6 +37,7 @@ function PistaChat({ user }) {
   const [promptChips, setPromptChips] = useState([]);
   const [gameChips, setGameChips] = useState([]);
   const [playerChips, setPlayerChips] = useState([]);
+  const [playtimeChips, setPlaytimeChips] = useState([]);
   const [useCollection, setUseCollection] = useState(false);
   const [threadId, setThreadId] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
@@ -227,6 +239,23 @@ function PistaChat({ user }) {
     setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
   };
 
+  const addPlaytimeChip = (playtime) => {
+    if (!playtimeChips.find(p => p.value === playtime.value)) {
+      setPlaytimeChips([...playtimeChips, playtime]);
+      insertTextAtCursor(`${playtime.label} `);
+    }
+  };
+
+  const removePlaytimeChip = (playtimeValue) => {
+    const playtime = playtimeChips.find(p => p.value === playtimeValue);
+    if (playtime) {
+      setPlaytimeChips(playtimeChips.filter(p => p.value !== playtimeValue));
+      // Remove playtime from input if present
+      const regex = new RegExp(`\\b${playtime.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+      setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
+    }
+  };
+
   const handleGameChipClick = (game) => {
     // Add game name to input at cursor position
     insertTextAtCursor(game.name + " ");
@@ -260,6 +289,7 @@ function PistaChat({ user }) {
     setPromptChips([]);
     setGameChips([]);
     setPlayerChips([]);
+    setPlaytimeChips([]);
     setUseCollection(false);
   };
 
@@ -273,6 +303,8 @@ function PistaChat({ user }) {
       last_game_id: gameChips.length > 0 ? gameChips[0].id : null,
       useCollection: useCollection,
       selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
+      player_chips: playerChips,
+      playtime_chips: playtimeChips.map(c => c.value),
     };
     
     // If useCollection is checked, explicitly set scope in message
@@ -476,7 +508,7 @@ function PistaChat({ user }) {
             ))}
           </div>
           <div className="player-counts">
-            {PLAYER_COUNTS.filter(p => !playerChips.includes(p)).map((count) => (
+            {playerChips.length === 0 && PLAYER_COUNTS.map((count) => (
               <button
                 key={count}
                 className="chip player-button"
@@ -484,6 +516,18 @@ function PistaChat({ user }) {
                 title="Add player count"
               >
                 + {count} players
+              </button>
+            ))}
+          </div>
+          <div className="playtime-options">
+            {playtimeChips.length === 0 && PLAYTIME_OPTIONS.map((playtime) => (
+              <button
+                key={playtime.value}
+                className="chip playtime-button"
+                onClick={() => addPlaytimeChip(playtime)}
+                title="Add playtime"
+              >
+                + {playtime.label}
               </button>
             ))}
           </div>
@@ -507,7 +551,7 @@ function PistaChat({ user }) {
           )}
           <div className="chat-input-row">
             {/* Display context chips above input */}
-            {(gameChips.length > 0 || promptChips.length > 0 || playerChips.length > 0) && (
+            {(gameChips.length > 0 || promptChips.length > 0 || playerChips.length > 0 || playtimeChips.length > 0) && (
               <div className="context-chips-display" style={{ marginBottom: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
                 {gameChips.map((game) => (
                   <div className="chip game-chip" key={game.id}>
@@ -546,6 +590,18 @@ function PistaChat({ user }) {
                       onClick={() => removePlayerChip(playerCount)}
                       className="chip-remove"
                       title="Remove player count"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {playtimeChips.map((playtime) => (
+                  <div className="chip playtime-chip" key={playtime.value}>
+                    ⏱️ {playtime.label}
+                    <button
+                      onClick={() => removePlaytimeChip(playtime.value)}
+                      className="chip-remove"
+                      title="Remove playtime"
                     >
                       ×
                     </button>

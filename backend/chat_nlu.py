@@ -241,22 +241,48 @@ def interpret_message(
     if re.search(r"same\s+(theme|category|categories)", text_l):
         cons.setdefault("categories", {})["jaccard_min"] = 0.5
 
-    # Handle player count constraints
-    player_match = re.search(r"(\d+)\s*player", text_l)
-    if player_match:
-        player_count = int(player_match.group(1))
+    # Handle player count constraints from context chips (priority) or text
+    player_chips = ctx.get("player_chips", [])
+    if player_chips and len(player_chips) > 0:
+        # Use the first player chip as the target player count
+        player_count = player_chips[0] if isinstance(player_chips[0], int) else int(player_chips[0])
         cons.setdefault("players", {})["exact"] = player_count
+        cons.setdefault("players", {})["use_recommended"] = True  # Use polls_json recommended players for similarity
+    else:
+        # Fall back to text parsing
+        player_match = re.search(r"(\d+)\s*player", text_l)
+        if player_match:
+            player_count = int(player_match.group(1))
+            cons.setdefault("players", {})["exact"] = player_count
+            cons.setdefault("players", {})["use_recommended"] = True
+        
+        # Handle player range (e.g., "2-4 players", "2 to 4 players")
+        player_range_match = re.search(r"(\d+)\s*[-to]\s*(\d+)\s*player", text_l)
+        if player_range_match:
+            min_players = int(player_range_match.group(1))
+            max_players = int(player_range_match.group(2))
+            cons.setdefault("players", {})["min_overlap"] = 1  # At least 1 player overlap
+        
+        # Handle "same player count" or "similar player count"
+        if "same player" in text_l or "similar player" in text_l:
+            cons.setdefault("players", {})["similar_best"] = True
     
-    # Handle player range (e.g., "2-4 players", "2 to 4 players")
-    player_range_match = re.search(r"(\d+)\s*[-to]\s*(\d+)\s*player", text_l)
-    if player_range_match:
-        min_players = int(player_range_match.group(1))
-        max_players = int(player_range_match.group(2))
-        cons.setdefault("players", {})["min_overlap"] = 1  # At least 1 player overlap
-    
-    # Handle "same player count" or "similar player count"
-    if "same player" in text_l or "similar player" in text_l:
-        cons.setdefault("players", {})["similar_best"] = True
+    # Handle playtime constraints from context chips (priority) or text
+    playtime_chips = ctx.get("playtime_chips", [])
+    if playtime_chips and len(playtime_chips) > 0:
+        # Use the first playtime chip as the target playtime (in minutes)
+        playtime_minutes = playtime_chips[0] if isinstance(playtime_chips[0], int) else int(playtime_chips[0])
+        cons.setdefault("playtime", {})["target"] = playtime_minutes
+        cons.setdefault("playtime", {})["tolerance"] = 0.3  # 30% tolerance (e.g., 60 min ± 18 min)
+    else:
+        # Fall back to text parsing for playtime
+        playtime_match = re.search(r"(\d+)\s*(?:min|minute|hour|hr)", text_l)
+        if playtime_match:
+            value = int(playtime_match.group(1))
+            if "hour" in text_l or "hr" in text_l:
+                value = value * 60
+            cons.setdefault("playtime", {})["target"] = value
+            cons.setdefault("playtime", {})["tolerance"] = 0.3
     
     # Handle "different" / "dissimilar" logic
     if "different" in text_l or "dissimilar" in text_l or "not" in text_l:
