@@ -565,7 +565,7 @@ body {
 
 .tile-year {
   color: #999;
-  font-size: 0.75rem;
+  font-size: 0.65rem;
 }
 
 /* Pagination */
@@ -601,6 +601,145 @@ body {
 .pagination-info {
   color: #666;
   font-size: 0.9rem;
+}
+
+/* Marketplace Sidebar */
+.marketplace-sidebar {
+  position: fixed;
+  right: 0;
+  top: 60px;
+  width: 400px;
+  height: calc(100vh - 60px);
+  background: white;
+  box-shadow: -2px 0 8px rgba(0,0,0,0.1);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.marketplace-header {
+  padding: 1rem;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f5f5f5;
+}
+
+.marketplace-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #333;
+}
+
+.marketplace-close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: #666;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.marketplace-close:hover {
+  background: #e0e0e0;
+}
+
+.marketplace-loading,
+.marketplace-error,
+.marketplace-empty {
+  padding: 2rem;
+  text-align: center;
+  color: #666;
+}
+
+.marketplace-error {
+  color: #d32f2f;
+}
+
+.marketplace-listings {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.marketplace-listing {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: #fafafa;
+  transition: box-shadow 0.2s;
+}
+
+.marketplace-listing:hover {
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.listing-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.listing-platform {
+  font-weight: 600;
+  color: #1976d2;
+  font-size: 0.9rem;
+}
+
+.listing-price {
+  font-size: 1.2rem;
+  font-weight: bold;
+  color: #4caf50;
+  margin-bottom: 0.5rem;
+}
+
+.shipping-note {
+  font-size: 0.85rem;
+  color: #666;
+  font-weight: normal;
+}
+
+.listing-rating {
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 0.25rem;
+}
+
+.listing-location {
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 0.5rem;
+}
+
+.listing-link {
+  display: inline-block;
+  color: #1976d2;
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.listing-link:hover {
+  text-decoration: underline;
+}
+
+.game-card {
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.game-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.15);
 }
 
 .tile-remove-button {

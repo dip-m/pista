@@ -65,8 +65,8 @@ class SimilarityEngine:
             constraints = constraints or {}
             query_vec = self._fetch_embedding(game_id).reshape(1, -1)
 
-            # search more than top_k to allow later filtering
-            n_search = max(top_k + 20, top_k * 2)  # Search more to account for filtering
+            # search 2n matches to allow for reordering by weighted criteria
+            n_search = top_k * 2  # Find 2n matches for reordering
             sims, idxs = self.index.search(query_vec, n_search)
             sims = sims[0]
             idxs = idxs[0]
@@ -95,21 +95,27 @@ class SimilarityEngine:
                 # "Closest in my collection" = just pass allowed_ids=user_collection_ids
                 continue
 
-            # Fetch additional game data
+            # Fetch additional game data including num_ratings, rank, year_published for reordering
             cur = self.conn.execute(
-                "SELECT name, thumbnail, average_rating FROM games WHERE id = ?",
+                "SELECT name, thumbnail, average_rating, num_ratings, rank, year_published FROM games WHERE id = ?",
                 (gid,)
             )
             game_row = cur.fetchone()
             game_name = game_row[0] if game_row else self._fetch_name(gid)
             thumbnail = game_row[1] if game_row and game_row[1] else None
             average_rating = float(game_row[2]) if game_row and game_row[2] is not None else None
+            num_ratings = int(game_row[3]) if game_row and game_row[3] is not None else 0
+            rank = int(game_row[4]) if game_row and game_row[4] is not None else None
+            year_published = int(game_row[5]) if game_row and game_row[5] is not None else None
             
             record: Dict[str, Any] = {
                 "game_id": gid,
                 "name": game_name,
                 "thumbnail": thumbnail,
                 "average_rating": average_rating,
+                "num_ratings": num_ratings,
+                "rank": rank,
+                "year_published": year_published,
                 "embedding_similarity": float(sim),
             }
 
@@ -145,16 +151,42 @@ class SimilarityEngine:
                     record["reason_summary"] = "Similarity based on embeddings only"
 
             results.append(record)
-            if len(results) >= top_k:
-                break
+            # Don't break early - collect all 2n matches for reordering
 
-        # final sorting
-        if explain:
-            results.sort(key=lambda r: r["final_score"], reverse=True)
-        else:
-            results.sort(key=lambda r: r["embedding_similarity"], reverse=True)
-
-        return results
+        # Reorder by weighted criteria: similarity score + num_ratings + rank + years since publish
+        import time
+        current_year = time.localtime().tm_year
+        
+        def calculate_weighted_score(record):
+            base_score = record.get("final_score", record.get("embedding_similarity", 0.0))
+            
+            # Normalize and weight factors
+            # num_ratings: log scale, max weight 0.1
+            num_ratings = record.get("num_ratings", 0)
+            ratings_weight = 0.1 * min(1.0, (num_ratings / 10000.0) if num_ratings > 0 else 0)
+            
+            # rank: better rank (lower number) = higher score, max weight 0.1
+            rank = record.get("rank")
+            rank_weight = 0.0
+            if rank is not None and rank > 0:
+                # Normalize: rank 1 = 1.0, rank 10000 = 0.0
+                rank_weight = 0.1 * max(0.0, 1.0 - (rank / 10000.0))
+            
+            # years since publish: newer games get slight boost, max weight 0.05
+            year = record.get("year_published")
+            year_weight = 0.0
+            if year is not None:
+                years_ago = current_year - year
+                # Games from last 5 years get full boost, older games get less
+                year_weight = 0.05 * max(0.0, 1.0 - (years_ago / 20.0))
+            
+            return base_score + ratings_weight + rank_weight + year_weight
+        
+        # Sort by weighted score
+        results.sort(key=calculate_weighted_score, reverse=True)
+        
+        # Return top_k after reordering
+        return results[:top_k]
 
     def _satisfies_constraints(
         self,

@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
+import Marketplace from "./Marketplace";
 
 // Common prompts that can be used as chips
 const COMMON_PROMPTS = [
@@ -30,6 +31,7 @@ function PistaChat({ user }) {
   const [gameSearchResults, setGameSearchResults] = useState([]);
   const [showGameSearch, setShowGameSearch] = useState(false);
   const [gameSearchEnabled, setGameSearchEnabled] = useState(false);
+  const [marketplaceGame, setMarketplaceGame] = useState(null);
 
   const loadChatHistory = useCallback(async () => {
     setLoadingHistory(true);
@@ -231,6 +233,13 @@ function PistaChat({ user }) {
 
   return (
     <div className="pista-chat-container">
+      {marketplaceGame && (
+        <Marketplace
+          gameId={marketplaceGame.id}
+          gameName={marketplaceGame.name}
+          onClose={() => setMarketplaceGame(null)}
+        />
+      )}
       {user && (
         <div className={`chat-history-sidebar ${showHistory ? "visible" : ""}`}>
           <div className="history-header">
@@ -494,7 +503,10 @@ function MessageList({ messages }) {
               <img src={m.image} alt="Generated" className="generated-image" />
             )}
             {m.results && m.results.length > 0 && (
-              <GameResultList results={m.results} />
+              <GameResultList 
+                results={m.results} 
+                onGameClick={(game) => setMarketplaceGame({ id: game.game_id, name: game.name })}
+              />
             )}
           </div>
         ))
@@ -503,11 +515,16 @@ function MessageList({ messages }) {
   );
 }
 
-function GameResultList({ results }) {
+function GameResultList({ results, onGameClick }) {
   return (
     <div className="game-results">
       {results.map((r) => (
-        <div className="game-card" key={r.game_id}>
+        <div 
+          className="game-card" 
+          key={r.game_id}
+          onClick={() => onGameClick && onGameClick(r)}
+          style={{ cursor: onGameClick ? "pointer" : "default" }}
+        >
           <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start" }}>
             {r.thumbnail && (
               <img 

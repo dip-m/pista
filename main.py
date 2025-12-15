@@ -531,7 +531,7 @@ def search_games(q: str, limit: int = 10):
 
 @app.get("/profile/collection")
 def get_collection(
-    sort_by: str = "added_at",
+    sort_by: str = "year_published",
     order: str = "desc",
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
 ):
@@ -542,7 +542,7 @@ def get_collection(
     # Validate sort_by and order
     valid_sort_fields = ["added_at", "name", "year_published", "rank", "average_rating"]
     if sort_by not in valid_sort_fields:
-        sort_by = "added_at"
+        sort_by = "year_published"
     if order.lower() not in ["asc", "desc"]:
         order = "desc"
     
@@ -727,8 +727,11 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
         allowed_ids: Optional[Set[int]] = None
         if scope == "user_collection":
             allowed_ids = user_collection or None
-            if not allowed_ids:
+            if not allowed_ids or len(allowed_ids) == 0:
                 scope = "global"
+                logger.debug("User collection is empty, falling back to global scope")
+            else:
+                logger.debug(f"Searching in collection with {len(allowed_ids)} games")
 
         # Extract include/exclude features from query_spec (set by NLU)
         include_features = query_spec.get("include_features")
@@ -737,6 +740,8 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
         logger.debug(f"Search params: include_features={include_features}, exclude_features={exclude_features}, constraints={constraints}")
         
         try:
+            # When searching in collection, we need to find more candidates since filtering is strict
+            # The search_similar function already finds 2n matches and reorders, so this should work
             results = ENGINE.search_similar(
                 game_id=base_game_id,
                 top_k=top_k,
@@ -747,6 +752,7 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                 include_features=include_features,
                 exclude_features=exclude_features,
             )
+            logger.debug(f"Found {len(results)} results for game_id={base_game_id}, scope={scope}")
         except Exception as e:
             logger.error(f"Error searching similar games: {e}", exc_info=True)
             results = []
@@ -902,4 +908,98 @@ async def generate_from_image(
     except Exception as e:
         logger.error(f"Error processing image: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to process image: {str(e)}")
+
+
+@app.get("/marketplace/search")
+def search_marketplace(
+    game_id: int,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    Search marketplace listings for a game from multiple sources.
+    Returns aggregated results from Amazon, eBay, GeekMarket, and Wallapop.
+    """
+    try:
+        # Get game name for search
+        cur = ENGINE_CONN.execute("SELECT name FROM games WHERE id = ?", (game_id,))
+        game_row = cur.fetchone()
+        if not game_row:
+            raise HTTPException(status_code=404, detail="Game not found")
+        
+        game_name = game_row[0]
+        
+        # TODO: Integrate with real marketplace APIs
+        # For now, return mock data structure
+        # In production, this would:
+        # 1. Search Amazon Product Advertising API
+        # 2. Search eBay Finding API
+        # 3. Search BoardGameGeek GeekMarket
+        # 4. Search Wallapop API
+        
+        listings = []
+        
+        # Mock Amazon listing
+        listings.append({
+            "platform": "Amazon",
+            "price": 29.99,
+            "currency": "$",
+            "shipping_included": True,
+            "condition": "New",
+            "location": "USA",
+            "seller_rating": 4.8,
+            "seller_reviews": 1250,
+            "url": f"https://www.amazon.com/s?k={game_name.replace(' ', '+')}",
+        })
+        
+        # Mock eBay listing
+        listings.append({
+            "platform": "eBay",
+            "price": 24.99,
+            "currency": "$",
+            "shipping_included": False,
+            "condition": "Used",
+            "location": "UK",
+            "seller_rating": 4.6,
+            "seller_reviews": 342,
+            "url": f"https://www.ebay.com/sch/i.html?_nkw={game_name.replace(' ', '+')}",
+        })
+        
+        # Mock GeekMarket listing
+        listings.append({
+            "platform": "GeekMarket",
+            "price": 22.50,
+            "currency": "$",
+            "shipping_included": False,
+            "condition": "Like New",
+            "location": "USA",
+            "seller_rating": 4.9,
+            "seller_reviews": 89,
+            "url": f"https://boardgamegeek.com/geekmarket/browse?query={game_name.replace(' ', '+')}",
+        })
+        
+        # Mock Wallapop listing
+        listings.append({
+            "platform": "Wallapop",
+            "price": 18.00,
+            "currency": "€",
+            "shipping_included": True,
+            "condition": "Used",
+            "location": "Spain",
+            "seller_rating": 4.7,
+            "seller_reviews": 156,
+            "url": f"https://es.wallapop.com/search?keywords={game_name.replace(' ', '+')}",
+        })
+        
+        return {
+            "game_id": game_id,
+            "game_name": game_name,
+            "listings": listings,
+            "total": len(listings)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching marketplace: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to search marketplace: {str(e)}")
 
