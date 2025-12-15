@@ -14,6 +14,9 @@ const COMMON_PROMPTS = [
   "Same mechanics",
 ];
 
+// Player count options for chips
+const PLAYER_COUNTS = [1, 2, 3, 4, 5, 6, 7, 8];
+
 function PistaChat({ user }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -22,6 +25,7 @@ function PistaChat({ user }) {
   const [chips, setChips] = useState([]);
   const [promptChips, setPromptChips] = useState([]);
   const [gameChips, setGameChips] = useState([]);
+  const [playerChips, setPlayerChips] = useState([]);
   const [useCollection, setUseCollection] = useState(false);
   const [threadId, setThreadId] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
@@ -127,6 +131,25 @@ function PistaChat({ user }) {
     setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
   };
 
+  const addPlayerChip = (playerCount) => {
+    if (!playerChips.includes(playerCount)) {
+      setPlayerChips([...playerChips, playerCount]);
+      insertTextAtCursor(`${playerCount} players `);
+    }
+  };
+
+  const removePlayerChip = (playerCount) => {
+    setPlayerChips(playerChips.filter(p => p !== playerCount));
+    // Remove player count from input if present
+    const regex = new RegExp(`\\b${playerCount}\\s*players?\\b`, 'gi');
+    setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
+  };
+
+  const handleGameChipClick = (game) => {
+    // Add game name to input at cursor position
+    insertTextAtCursor(game.name + " ");
+  };
+
   const loadThread = async (threadIdToLoad) => {
     try {
       const res = await fetch(`${API_BASE}/chat/history/${threadIdToLoad}`, {
@@ -154,6 +177,7 @@ function PistaChat({ user }) {
     setChips([]);
     setPromptChips([]);
     setGameChips([]);
+    setPlayerChips([]);
     setUseCollection(false);
   };
 
@@ -204,7 +228,9 @@ function PistaChat({ user }) {
       setInput("");
       // Keep game chips for next query in the thread (don't clear them)
       // setGameChips([]); // Removed - persist chips across messages
-      setPromptChips([]);
+      // Keep prompt chips and player chips too for context
+      // setPromptChips([]); // Keep for context
+      // setPlayerChips([]); // Keep for context
       setGameSearchQuery("");
 
       // Update thread ID if this was a new thread
@@ -281,7 +307,10 @@ function PistaChat({ user }) {
           </div>
         )}
         <div className="chat-window">
-          <MessageList messages={messages} />
+          <MessageList 
+            messages={messages} 
+            onGameClick={(game) => setMarketplaceGame({ id: game.game_id, name: game.name })}
+          />
         </div>
 
         <div className="filter-bar">
@@ -304,11 +333,29 @@ function PistaChat({ user }) {
           ))}
           {gameChips.map((game) => (
             <div className="chip game-chip" key={game.id}>
-              🎮 {game.name}
+              <span 
+                onClick={() => handleGameChipClick(game)}
+                style={{ cursor: "pointer", flex: 1 }}
+                title="Click to add to input"
+              >
+                🎮 {game.name}
+              </span>
               <button
                 onClick={() => removeGameChip(game.id)}
                 className="chip-remove"
                 title="Remove game"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          {playerChips.map((playerCount) => (
+            <div className="chip player-chip" key={playerCount}>
+              👥 {playerCount} players
+              <button
+                onClick={() => removePlayerChip(playerCount)}
+                className="chip-remove"
+                title="Remove player count"
               >
                 ×
               </button>
@@ -353,6 +400,18 @@ function PistaChat({ user }) {
               </button>
             ))}
           </div>
+          <div className="player-counts">
+            {PLAYER_COUNTS.filter(p => !playerChips.includes(p)).map((count) => (
+              <button
+                key={count}
+                className="chip player-button"
+                onClick={() => addPlayerChip(count)}
+                title="Add player count"
+              >
+                + {count} players
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="chat-input-container">
@@ -383,6 +442,53 @@ function PistaChat({ user }) {
             </div>
           )}
           <div className="chat-input-row">
+            {/* Display context chips above input */}
+            {(gameChips.length > 0 || promptChips.length > 0 || playerChips.length > 0) && (
+              <div className="context-chips-display" style={{ marginBottom: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+                {gameChips.map((game) => (
+                  <div className="chip game-chip" key={game.id}>
+                    <span 
+                      onClick={() => handleGameChipClick(game)}
+                      style={{ cursor: "pointer", flex: 1 }}
+                      title="Click to add to input"
+                    >
+                      🎮 {game.name}
+                    </span>
+                    <button
+                      onClick={() => removeGameChip(game.id)}
+                      className="chip-remove"
+                      title="Remove game"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {promptChips.map((prompt) => (
+                  <div className="chip prompt-chip" key={prompt}>
+                    {prompt}
+                    <button
+                      onClick={() => removePromptChip(prompt)}
+                      className="chip-remove"
+                      title="Remove prompt"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {playerChips.map((playerCount) => (
+                  <div className="chip player-chip" key={playerCount}>
+                    👥 {playerCount} players
+                    <button
+                      onClick={() => removePlayerChip(playerCount)}
+                      className="chip-remove"
+                      title="Remove player count"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <input
               ref={setInputRef}
               value={input}
@@ -451,7 +557,7 @@ function PistaChat({ user }) {
   );
 }
 
-function MessageList({ messages }) {
+function MessageList({ messages, onGameClick }) {
   const highlightText = (text, querySpec) => {
     if (!querySpec || !text) return text;
     
@@ -505,7 +611,7 @@ function MessageList({ messages }) {
             {m.results && m.results.length > 0 && (
               <GameResultList 
                 results={m.results} 
-                onGameClick={(game) => setMarketplaceGame({ id: game.game_id, name: game.name })}
+                onGameClick={onGameClick}
               />
             )}
           </div>
@@ -548,6 +654,11 @@ function GameResultList({ results, onGameClick }) {
                 {r.average_rating && (
                   <span style={{ marginLeft: "1rem" }}>
                     ⭐ {r.average_rating.toFixed(1)}
+                    {r.num_ratings && (
+                      <span style={{ marginLeft: "0.5rem", opacity: 0.7, fontSize: "0.9em" }}>
+                        ({r.num_ratings.toLocaleString()})
+                      </span>
+                    )}
                   </span>
                 )}
               </div>

@@ -241,6 +241,23 @@ def interpret_message(
     if re.search(r"same\s+(theme|category|categories)", text_l):
         cons.setdefault("categories", {})["jaccard_min"] = 0.5
 
+    # Handle player count constraints
+    player_match = re.search(r"(\d+)\s*player", text_l)
+    if player_match:
+        player_count = int(player_match.group(1))
+        cons.setdefault("players", {})["exact"] = player_count
+    
+    # Handle player range (e.g., "2-4 players", "2 to 4 players")
+    player_range_match = re.search(r"(\d+)\s*[-to]\s*(\d+)\s*player", text_l)
+    if player_range_match:
+        min_players = int(player_range_match.group(1))
+        max_players = int(player_range_match.group(2))
+        cons.setdefault("players", {})["min_overlap"] = 1  # At least 1 player overlap
+    
+    # Handle "same player count" or "similar player count"
+    if "same player" in text_l or "similar player" in text_l:
+        cons.setdefault("players", {})["similar_best"] = True
+    
     # Handle "different" / "dissimilar" logic
     if "different" in text_l or "dissimilar" in text_l or "not" in text_l:
         if "mechanic" in text_l or "mechanism" in text_l:

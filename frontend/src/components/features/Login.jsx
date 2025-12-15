@@ -17,20 +17,12 @@ function Login({ onLogin }) {
 
     try {
       if (isRegister) {
-        // #region agent log
-        console.log('[DEBUG] Register attempt:', {username, bggId, bggIdType: typeof bggId});
-        fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Login.jsx:19','message':'Register attempt',data:{username,bggId,bggIdType:typeof bggId},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         await authService.register(username, password, bggId ? bggId.trim() || null : null);
       } else {
         await authService.login(username, password);
       }
       onLogin();
     } catch (err) {
-      // #region agent log
-      console.error('[DEBUG] Register error:', err);
-      fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Login.jsx:26','message':'Register error',data:{error:err.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       setError(err.message);
     } finally {
       setLoading(false);
@@ -68,10 +60,6 @@ function Login({ onLogin }) {
                 type="text"
                 value={bggId}
                 onChange={(e) => {
-                  // #region agent log
-                  console.log('[DEBUG] BGG ID input onChange:', e.target.value);
-                  fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Login.jsx:62','message':'BGG ID input onChange',data:{value:e.target.value},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'B'})}).catch(()=>{});
-                  // #endregion
                   setBggId(e.target.value);
                 }}
                 placeholder="Optional BoardGameGeek username or ID"

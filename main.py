@@ -141,15 +141,6 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
         user = cur.fetchone()
         if user is None:
             return None
-        # #region agent log
-        import json, os
-        log_path = os.path.join(os.path.dirname(__file__), '.cursor', 'debug.log')
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        bgg_id_val = user[2] if len(user) > 2 else None
-        logger.debug(f"[DEBUG] get_current_user - user_id: {user[0]}, bgg_id: {bgg_id_val}, bgg_id_type: {type(bgg_id_val).__name__}")
-        with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"C","location":"main.py:135","message":"get_current_user result","data":{"user_id":user[0],"bgg_id":bgg_id_val,"bgg_id_type":type(bgg_id_val).__name__},"timestamp":int(__import__('time').time()*1000)})+'\n')
-        # #endregion
         return {"id": user[0], "username": user[1], "bgg_id": user[2] if len(user) > 2 else None}
     except Exception as e:
         logger.debug(f"Error getting current user: {e}", exc_info=True)
@@ -260,14 +251,6 @@ def compare_two_games(engine: SimilarityEngine, game_a_id: Any, game_b_id: Any) 
 @app.post("/auth/register")
 def register(req: RegisterRequest):
     """Register a new user."""
-    # #region agent log
-    import json, os
-    log_path = os.path.join(os.path.dirname(__file__), '.cursor', 'debug.log')
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"main.py:186","message":"Register request received","data":{"username":req.username,"bgg_id":req.bgg_id,"bgg_id_type":type(req.bgg_id).__name__},"timestamp":int(__import__('time').time()*1000)})+'\n')
-    # #endregion
-    
     # Check if username exists
     cur = ENGINE_CONN.execute("SELECT id FROM users WHERE username = ?", (req.username,))
     if cur.fetchone():
@@ -281,13 +264,6 @@ def register(req: RegisterRequest):
         elif isinstance(bgg_id, int):
             bgg_id = str(bgg_id).strip() or None
     
-    # #region agent log
-    import json, os
-    log_path = os.path.join(os.path.dirname(__file__), '.cursor', 'debug.log')
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"main.py:200","message":"BGG ID after sanitization","data":{"bgg_id":bgg_id},"timestamp":int(__import__('time').time()*1000)})+'\n')
-    # #endregion
-    
     # Create user
     password_hash = hash_password(req.password)
     cur = ENGINE_CONN.execute(
@@ -296,13 +272,6 @@ def register(req: RegisterRequest):
     )
     ENGINE_CONN.commit()
     user_id = cur.lastrowid
-    
-    # #region agent log
-    import json, os
-    log_path = os.path.join(os.path.dirname(__file__), '.cursor', 'debug.log')
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"main.py:212","message":"User registered","data":{"user_id":user_id,"bgg_id":bgg_id},"timestamp":int(__import__('time').time()*1000)})+'\n')
-    # #endregion
     
     # Create access token
     access_token = create_access_token(data={"sub": str(user_id)})
@@ -344,14 +313,6 @@ def get_current_user_info(current_user: Optional[Dict[str, Any]] = Depends(get_c
 @app.put("/profile/bgg-id")
 def update_bgg_id(req: BggIdUpdateRequest, current_user: Dict[str, Any] = Depends(get_current_user_required)):
     """Update user's BGG ID (can be text/username or numeric ID)."""
-    # #region agent log
-    import json, os
-    log_path = os.path.join(os.path.dirname(__file__), '.cursor', 'debug.log')
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"main.py:287","message":"BGG ID update request received","data":{"user_id":current_user["id"],"bgg_id_received":req.bgg_id},"timestamp":int(__import__('time').time()*1000)})+'\n')
-    # #endregion
-    
     # Validate and sanitize input
     bgg_id = req.bgg_id
     if bgg_id:
@@ -361,26 +322,12 @@ def update_bgg_id(req: BggIdUpdateRequest, current_user: Dict[str, Any] = Depend
     else:
         bgg_id = None
     
-    # #region agent log
-    import json, os
-    log_path = os.path.join(os.path.dirname(__file__), '.cursor', 'debug.log')
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"main.py:302","message":"BGG ID after sanitization","data":{"bgg_id":bgg_id},"timestamp":int(__import__('time').time()*1000)})+'\n')
-    # #endregion
-    
     logger.info(f"Updating BGG ID for user {current_user['id']} to {bgg_id}")
     ENGINE_CONN.execute(
         "UPDATE users SET bgg_id = ? WHERE id = ?",
         (bgg_id, current_user["id"])
     )
     ENGINE_CONN.commit()
-    
-    # #region agent log
-    import json, os
-    log_path = os.path.join(os.path.dirname(__file__), '.cursor', 'debug.log')
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"main.py:315","message":"BGG ID updated in database","data":{"user_id":current_user["id"],"bgg_id":bgg_id},"timestamp":int(__import__('time').time()*1000)})+'\n')
-    # #endregion
     
     logger.info(f"BGG ID updated successfully for user {current_user['id']}")
     return {"success": True, "bgg_id": bgg_id}
@@ -389,24 +336,8 @@ def update_bgg_id(req: BggIdUpdateRequest, current_user: Dict[str, Any] = Depend
 @app.post("/profile/collection/import-bgg")
 def import_bgg_collection(current_user: Dict[str, Any] = Depends(get_current_user_required)):
     """Import collection from BGG."""
-    # #region agent log
-    import json, os
-    log_path = os.path.join(os.path.dirname(__file__), '.cursor', 'debug.log')
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    logger.info(f"[DEBUG] Import BGG collection request - user_id: {current_user['id']}, bgg_id: {current_user.get('bgg_id')}")
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"C","location":"main.py:325","message":"Import BGG collection request","data":{"user_id":current_user["id"],"bgg_id":current_user.get("bgg_id"),"bgg_id_type":type(current_user.get("bgg_id")).__name__},"timestamp":int(__import__('time').time()*1000)})+'\n')
-    # #endregion
-    
     bgg_id_value = current_user.get("bgg_id")
     if not bgg_id_value:
-        # #region agent log
-        logger.warning(f"[DEBUG] BGG ID missing for user {current_user['id']}")
-        import json, os
-        log_path = os.path.join(os.path.dirname(__file__), '.cursor', 'debug.log')
-        with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps({"sessionId":"debug-session","runId":"run2","hypothesisId":"C","location":"main.py:333","message":"BGG ID missing error","data":{"user_id":current_user["id"],"bgg_id":bgg_id_value},"timestamp":int(__import__('time').time()*1000)})+'\n')
-        # #endregion
         raise HTTPException(status_code=400, detail="BGG ID not set. Please set your BGG ID first.")
     
     logger.info(f"Importing BGG collection for user {current_user['id']} (BGG ID: {current_user['bgg_id']})")
@@ -507,10 +438,24 @@ def search_games(q: str, limit: int = 10):
         return cached_result
     
     try:
-        cur = ENGINE_CONN.execute(
-            "SELECT id, name, year_published, thumbnail FROM games WHERE name LIKE ? ORDER BY name LIMIT ?",
-            (f"%{q}%", limit)
-        )
+        # Split query into words for better matching
+        # "Escape Curse" should match "Escape: The Curse of the Temple"
+        query_words = q.split()
+        
+        # Build SQL with multiple LIKE conditions for each word
+        # This allows partial word matching across the game name
+        if len(query_words) == 1:
+            # Single word: simple LIKE match
+            sql = "SELECT id, name, year_published, thumbnail FROM games WHERE name LIKE ? ORDER BY name LIMIT ?"
+            params = (f"%{query_words[0]}%", limit)
+        else:
+            # Multiple words: each word must appear somewhere in the name
+            # Use LOWER for case-insensitive matching
+            conditions = " AND ".join(["LOWER(name) LIKE LOWER(?)" for _ in query_words])
+            sql = f"SELECT id, name, year_published, thumbnail FROM games WHERE {conditions} ORDER BY name LIMIT ?"
+            params = tuple([f"%{word}%" for word in query_words] + [limit])
+        
+        cur = ENGINE_CONN.execute(sql, params)
         results = []
         for row in cur.fetchall():
             results.append({
@@ -519,6 +464,29 @@ def search_games(q: str, limit: int = 10):
                 "year_published": row[2],
                 "thumbnail": row[3]
             })
+        
+        # If we got fewer results than limit, try a more lenient search
+        # Match games where ANY word appears (OR instead of AND)
+        if len(results) < limit and len(query_words) > 1:
+            conditions = " OR ".join(["LOWER(name) LIKE LOWER(?)" for _ in query_words])
+            sql = f"SELECT id, name, year_published, thumbnail FROM games WHERE {conditions} ORDER BY name LIMIT ?"
+            params = tuple([f"%{word}%" for word in query_words] + [limit * 2])  # Get more for deduplication
+            cur = ENGINE_CONN.execute(sql, params)
+            additional_results = []
+            seen_ids = {r["id"] for r in results}
+            for row in cur.fetchall():
+                if row[0] not in seen_ids:
+                    additional_results.append({
+                        "id": row[0],
+                        "name": row[1],
+                        "year_published": row[2],
+                        "thumbnail": row[3]
+                    })
+                    seen_ids.add(row[0])
+                    if len(results) + len(additional_results) >= limit:
+                        break
+            results.extend(additional_results)
+            results = results[:limit]
         
         # Cache results
         set_cached(cache_key, results)
@@ -721,7 +689,8 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
     if intent == "recommend_similar":
         base_game_id = query_spec["base_game_id"]
         constraints = query_spec.get("constraints") or {}
-        scope = query_spec.get("scope", "global")
+        original_scope = query_spec.get("scope", "global")  # Track original scope before it might change
+        scope = original_scope
         top_k = int(query_spec.get("top_k", 5))
 
         allowed_ids: Optional[Set[int]] = None
@@ -753,17 +722,87 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                 exclude_features=exclude_features,
             )
             logger.debug(f"Found {len(results)} results for game_id={base_game_id}, scope={scope}")
+            
+            # If no results found, try with loosened constraints and features
+            if not results:
+                logger.debug("No results found, attempting with loosened constraints/features")
+                
+                # First try: if searching in collection and no results, try global scope
+                if allowed_ids and len(allowed_ids) > 0:
+                    logger.debug(f"No results in collection ({len(allowed_ids)} games), trying global scope")
+                    try:
+                        results = ENGINE.search_similar(
+                            game_id=base_game_id,
+                            top_k=top_k * 2,
+                            include_self=False,
+                            constraints=constraints,
+                            allowed_ids=None,  # Remove collection restriction - search globally
+                            explain=True,
+                            include_features=include_features,
+                            exclude_features=exclude_features,
+                        )
+                        results = results[:top_k] if results else []
+                        logger.debug(f"Found {len(results)} results in global scope")
+                    except Exception as search_err:
+                        logger.error(f"Error in global scope search: {search_err}", exc_info=True)
+                
+                # If still no results, try without constraints and features
+                if not results:
+                    logger.debug(f"Retrying without constraints and features")
+                    try:
+                        results = ENGINE.search_similar(
+                            game_id=base_game_id,
+                            top_k=top_k * 2,
+                            include_self=False,
+                            constraints=None,  # Remove ALL constraints
+                            allowed_ids=None,  # Remove collection restriction
+                            explain=True,
+                            include_features=None,
+                            exclude_features=None,
+                        )
+                        results = results[:top_k] if results else []
+                        logger.debug(f"Found {len(results)} results without constraints/features")
+                    except Exception as search_err:
+                        logger.error(f"Error in unconstrained search: {search_err}", exc_info=True)
+                
+                # If still no results, try embedding-only (no explain mode)
+                if not results:
+                    logger.debug(f"Retrying with embedding-only (no explain, no constraints, no features)")
+                    try:
+                        results = ENGINE.search_similar(
+                            game_id=base_game_id,
+                            top_k=top_k,
+                            include_self=False,
+                            constraints=None,
+                            allowed_ids=None,  # Remove collection restriction
+                            explain=False,  # Use embedding-only (no feature filtering)
+                            include_features=None,
+                            exclude_features=None,
+                        )
+                        logger.debug(f"Found {len(results)} results with embedding-only search")
+                    except Exception as search_err:
+                        logger.error(f"Error in embedding-only search: {search_err}", exc_info=True)
         except Exception as e:
             logger.error(f"Error searching similar games: {e}", exc_info=True)
             results = []
 
+        # Track if scope was changed from user_collection to global
+        scope_changed = False
+        if original_scope == "user_collection" and scope == "global" and results:
+            scope_changed = True
+        
         if results:
             excluded_text = ""
             if exclude_features:
                 excluded_text = f" (excluding: {', '.join(exclude_features)})"
+            
+            scope_notice = ""
+            if scope_changed:
+                scope_notice = " No similar games found in your collection, so I'm showing results from the global database."
+            
             reply_text = (
                 f"Here are some games that feel close to your base game "
-                f"(intent: {intent}, scope: {scope}){excluded_text}:"
+                f"(intent: {intent}, scope: {scope}){excluded_text}.{scope_notice}"
             )
         else:
             excluded_text = ""
@@ -911,15 +950,19 @@ async def generate_from_image(
 
 
 @app.get("/marketplace/search")
-def search_marketplace(
+def search_marketplace_endpoint(
     game_id: int,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
 ):
     """
     Search marketplace listings for a game from multiple sources.
     Returns aggregated results from Amazon, eBay, GeekMarket, and Wallapop.
+    Use USE_MOCK_MARKETPLACE environment variable to toggle mock mode.
     """
     try:
+        import os
+        from backend.marketplace_service import search_marketplace
+        
         # Get game name for search
         cur = ENGINE_CONN.execute("SELECT name FROM games WHERE id = ?", (game_id,))
         game_row = cur.fetchone()
@@ -928,73 +971,15 @@ def search_marketplace(
         
         game_name = game_row[0]
         
-        # TODO: Integrate with real marketplace APIs
-        # For now, return mock data structure
-        # In production, this would:
-        # 1. Search Amazon Product Advertising API
-        # 2. Search eBay Finding API
-        # 3. Search BoardGameGeek GeekMarket
-        # 4. Search Wallapop API
-        
-        listings = []
-        
-        # Mock Amazon listing
-        listings.append({
-            "platform": "Amazon",
-            "price": 29.99,
-            "currency": "$",
-            "shipping_included": True,
-            "condition": "New",
-            "location": "USA",
-            "seller_rating": 4.8,
-            "seller_reviews": 1250,
-            "url": f"https://www.amazon.com/s?k={game_name.replace(' ', '+')}",
-        })
-        
-        # Mock eBay listing
-        listings.append({
-            "platform": "eBay",
-            "price": 24.99,
-            "currency": "$",
-            "shipping_included": False,
-            "condition": "Used",
-            "location": "UK",
-            "seller_rating": 4.6,
-            "seller_reviews": 342,
-            "url": f"https://www.ebay.com/sch/i.html?_nkw={game_name.replace(' ', '+')}",
-        })
-        
-        # Mock GeekMarket listing
-        listings.append({
-            "platform": "GeekMarket",
-            "price": 22.50,
-            "currency": "$",
-            "shipping_included": False,
-            "condition": "Like New",
-            "location": "USA",
-            "seller_rating": 4.9,
-            "seller_reviews": 89,
-            "url": f"https://boardgamegeek.com/geekmarket/browse?query={game_name.replace(' ', '+')}",
-        })
-        
-        # Mock Wallapop listing
-        listings.append({
-            "platform": "Wallapop",
-            "price": 18.00,
-            "currency": "€",
-            "shipping_included": True,
-            "condition": "Used",
-            "location": "Spain",
-            "seller_rating": 4.7,
-            "seller_reviews": 156,
-            "url": f"https://es.wallapop.com/search?keywords={game_name.replace(' ', '+')}",
-        })
+        # Search all marketplaces
+        listings = search_marketplace(game_name)
         
         return {
             "game_id": game_id,
             "game_name": game_name,
             "listings": listings,
-            "total": len(listings)
+            "total": len(listings),
+            "mock_mode": os.getenv("USE_MOCK_MARKETPLACE", "false").lower() == "true"
         }
         
     except HTTPException:

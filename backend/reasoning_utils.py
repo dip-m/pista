@@ -42,6 +42,46 @@ def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, objec
     designers = fetch("game_designers", "designers", "designer_id")
     artists = fetch("game_artists", "artists", "artist_id")
     publishers = fetch("game_publishers", "publishers", "publisher_id")
+    
+    # Get player count info from games table and polls_json
+    cur = conn.execute(
+        "SELECT min_players, max_players, polls_json FROM games WHERE id = ?",
+        (game_id,)
+    )
+    player_row = cur.fetchone()
+    min_players = player_row[0] if player_row and player_row[0] else None
+    max_players = player_row[1] if player_row and player_row[1] else None
+    polls_json_str = player_row[2] if player_row and player_row[2] else None
+    
+    # Parse polls_json to get recommended player counts
+    recommended_players = set()
+    best_player_count = None
+    if polls_json_str:
+        try:
+            import json
+            polls_data = json.loads(polls_json_str)
+            suggested_players = polls_data.get("suggested_numplayers", {})
+            if isinstance(suggested_players, dict):
+                results = suggested_players.get("results", [])
+                max_best_votes = 0
+                for result in results:
+                    if isinstance(result, dict):
+                        numplayers = result.get("numplayers")
+                        votes = result.get("votes", {})
+                        # Count "Best" votes
+                        best_votes = votes.get("Best", 0)
+                        recommended_votes = votes.get("Recommended", 0)
+                        if best_votes > 0 or recommended_votes > 0:
+                            try:
+                                player_num = int(numplayers.replace("+", "").split()[0])
+                                recommended_players.add(player_num)
+                                if best_votes > max_best_votes:
+                                    max_best_votes = best_votes
+                                    best_player_count = player_num
+                            except (ValueError, AttributeError):
+                                pass
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
 
     return {
         "id": game_id,
@@ -52,6 +92,10 @@ def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, objec
         "designers": designers,
         "artists": artists,
         "publishers": publishers,
+        "min_players": min_players,
+        "max_players": max_players,
+        "recommended_players": recommended_players,
+        "best_player_count": best_player_count,
     }
 
 
@@ -70,6 +114,15 @@ def compute_meta_similarity(f1: Dict[str, object], f2: Dict[str, object]) -> Tup
     des1, des2 = f1["designers"], f2["designers"]
     art1, art2 = f1["artists"], f2["artists"]
     pub1, pub2 = f1["publishers"], f2["publishers"]
+    
+    # Filter out non-gameplay categories that shouldn't affect similarity
+    # These are implementation/publishing categories, not gameplay features
+    excluded_categories = {
+        "Digital Implementation", "Crowdfunding", "Digital Game",
+        "App Implementation", "Video Game Theme", "Software"
+    }
+    cat1 = cat1 - excluded_categories
+    cat2 = cat2 - excluded_categories
 
     overlaps = {
         "shared_mechanics": sorted(mech1 & mech2),

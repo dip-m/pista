@@ -5,10 +5,23 @@ import Profile from "./components/features/Profile";
 import Login from "./components/features/Login";
 import { authService } from "./services/auth";
 import "./styles/index.css";
+import "./styles/dark-mode.css";
 
 function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [darkMode, setDarkMode] = useState(() => {
+    // Check localStorage or system preference
+    const saved = localStorage.getItem("darkMode");
+    if (saved !== null) return saved === "true";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
+
+  useEffect(() => {
+    // Apply dark mode theme
+    document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
+    localStorage.setItem("darkMode", darkMode.toString());
+  }, [darkMode]);
 
   useEffect(() => {
     checkAuth();
@@ -65,12 +78,28 @@ function App() {
             {user ? (
               <>
                 <Link to="/profile">Profile</Link>
+                <button 
+                  onClick={() => setDarkMode(!darkMode)} 
+                  className="theme-toggle"
+                  title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+                >
+                  {darkMode ? "☀️" : "🌙"}
+                </button>
                 <button onClick={handleLogout} className="logout-button">
                   Logout ({user.username})
                 </button>
               </>
             ) : (
-              <Link to="/login">Login</Link>
+              <>
+                <button 
+                  onClick={() => setDarkMode(!darkMode)} 
+                  className="theme-toggle"
+                  title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
+                >
+                  {darkMode ? "☀️" : "🌙"}
+                </button>
+                <Link to="/login">Login</Link>
+              </>
             )}
           </div>
         </nav>

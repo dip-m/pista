@@ -86,21 +86,32 @@ def fetch_user_collection(bgg_user_id: str) -> List[Dict[str, Any]]:
                     logger.debug(f"Invalid game_id: {game_id}")
                     continue
                 
-                # Extract personal rating from stats/rating/value
+                # Extract personal rating from stats/rating
+                # BGG XML structure: <stats><rating value="8.5"/> or <stats><rating><value>8.5</value></rating>
                 personal_rating = None
                 stats = item.find("stats")
                 if stats is not None:
                     rating = stats.find("rating")
                     if rating is not None:
-                        value_elem = rating.find("value")
-                        if value_elem is not None and value_elem.text:
+                        # Try attribute first (value="8.5")
+                        rating_value = rating.get("value")
+                        if rating_value:
                             try:
-                                # BGG ratings are stored as strings, "N/A" if not rated
-                                rating_str = value_elem.text.strip()
-                                if rating_str and rating_str != "N/A":
+                                rating_str = rating_value.strip()
+                                if rating_str and rating_str != "N/A" and rating_str.lower() != "n/a":
                                     personal_rating = float(rating_str)
                             except (ValueError, AttributeError):
                                 pass
+                        # If no attribute, try element text
+                        if personal_rating is None:
+                            value_elem = rating.find("value")
+                            if value_elem is not None and value_elem.text:
+                                try:
+                                    rating_str = value_elem.text.strip()
+                                    if rating_str and rating_str != "N/A" and rating_str.lower() != "n/a":
+                                        personal_rating = float(rating_str)
+                                except (ValueError, AttributeError):
+                                    pass
                 
                 games.append({
                     "game_id": game_id_int,

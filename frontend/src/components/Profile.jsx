@@ -144,19 +144,12 @@ function Profile({ user, onUserUpdate }) {
                 placeholder="Enter your BGG username or ID"
                 onBlur={async (e) => {
                   const bggIdValue = e.target.value.trim() || null;
-                  // #region agent log
-                  console.log('[DEBUG] BGG ID onBlur:', {bggIdValue, currentBggId: user.bgg_id, localBggId: bggId});
-                  fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:123','message':'BGG ID onBlur triggered',data:{bggIdValue,currentBggId:user.bgg_id,localBggId:bggId},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'A'})}).catch(()=>{});
-                  // #endregion
-                  
                   // Only update if value actually changed
                   if (bggIdValue === (user.bgg_id || "")) {
-                    console.log('[DEBUG] BGG ID unchanged, skipping update');
                     return;
                   }
                   
                   try {
-                    console.log('[DEBUG] Sending BGG ID update request:', bggIdValue);
                     const res = await fetch(`${API_BASE}/profile/bgg-id`, {
                       method: "PUT",
                       headers: {
@@ -165,16 +158,8 @@ function Profile({ user, onUserUpdate }) {
                       },
                       body: JSON.stringify({ bgg_id: bggIdValue }),
                     });
-                    // #region agent log
-                    console.log('[DEBUG] BGG ID API response:', {status: res.status, ok: res.ok});
-                    fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:134','message':'BGG ID API response',data:{status:res.status,ok:res.ok},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'A'})}).catch(()=>{});
-                    // #endregion
                     if (res.ok) {
                       const data = await res.json();
-                      // #region agent log
-                      console.log('[DEBUG] BGG ID update success:', data);
-                      fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:137','message':'BGG ID update success',data:{bgg_id:data.bgg_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'A'})}).catch(()=>{});
-                      // #endregion
                       // Update local state to match server response
                       setBggId(data.bgg_id || "");
                       // Update user object and notify parent
@@ -185,19 +170,11 @@ function Profile({ user, onUserUpdate }) {
                       }
                     } else {
                       const error = await res.json();
-                      // #region agent log
-                      console.error('[DEBUG] BGG ID update error:', error);
-                      fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:142','message':'BGG ID update error',data:{error:error.detail},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'A'})}).catch(()=>{});
-                      // #endregion
                       alert(error.detail || "Failed to update BGG ID");
                       // Revert to original value on error
                       setBggId(user.bgg_id || "");
                     }
                   } catch (err) {
-                    // #region agent log
-                    console.error('[DEBUG] BGG ID update exception:', err);
-                    fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:147','message':'BGG ID update exception',data:{error:err.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'A'})}).catch(()=>{});
-                    // #endregion
                     alert("Failed to update BGG ID: " + err.message);
                     // Revert to original value on error
                     setBggId(user.bgg_id || "");
@@ -208,44 +185,23 @@ function Profile({ user, onUserUpdate }) {
             {(bggId || user.bgg_id) && (
               <button
                 onClick={async () => {
-                  // #region agent log
-                  console.log('[DEBUG] Import button clicked:', {bggId, userBggId: user.bgg_id});
-                  fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:183','message':'Import button clicked',data:{bggId,userBggId:user.bgg_id},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
-                  // #endregion
                   if (!window.confirm("This will import/update your collection from BGG. Continue?")) {
                     return;
                   }
                   try {
-                    console.log('[DEBUG] Sending import request');
                     const res = await fetch(`${API_BASE}/profile/collection/import-bgg`, {
                       method: "POST",
                       headers: authService.getAuthHeaders(),
                     });
-                    // #region agent log
-                    console.log('[DEBUG] Import API response:', {status: res.status, ok: res.ok});
-                    fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:191','message':'Import API response',data:{status:res.status,ok:res.ok},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
-                    // #endregion
                     if (res.ok) {
                       const data = await res.json();
-                      // #region agent log
-                      console.log('[DEBUG] Import success:', data);
-                      fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:194','message':'Import success',data:{added:data.added,skipped:data.skipped},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
-                      // #endregion
                       alert(`Imported ${data.added} games from BGG! (${data.skipped} skipped)`);
                       await loadCollection();
                     } else {
                       const error = await res.json();
-                      // #region agent log
-                      console.error('[DEBUG] Import error:', error);
-                      fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:199','message':'Import error',data:{error:error.detail},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
-                      // #endregion
                       alert(error.detail || "Failed to import collection");
                     }
                   } catch (err) {
-                    // #region agent log
-                    console.error('[DEBUG] Import exception:', err);
-                    fetch('http://127.0.0.1:7242/ingest/d77548c2-ca0a-4d35-a70c-31fb8e09f3a3',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Profile.jsx:203','message':'Import exception',data:{error:err.message},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'})}).catch(()=>{});
-                    // #endregion
                     alert("Failed to import collection: " + err.message);
                   }
                 }}
