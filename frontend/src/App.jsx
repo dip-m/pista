@@ -3,6 +3,8 @@ import { BrowserRouter as Router, Routes, Route, Navigate, Link } from "react-ro
 import PistaChat from "./components/features/PistaChat";
 import Profile from "./components/features/Profile";
 import Login from "./components/features/Login";
+import AdminGames from "./components/features/AdminGames";
+import FeedbackAdmin from "./components/features/FeedbackAdmin";
 import { authService } from "./services/auth";
 import "./styles/index.css";
 import "./styles/dark-mode.css";
@@ -78,6 +80,12 @@ function App() {
             {user ? (
               <>
                 <Link to="/profile">Profile</Link>
+                {user.is_admin && (
+                  <>
+                    <Link to="/admin">Admin Games</Link>
+                    <Link to="/admin/feedback">Admin Feedback</Link>
+                  </>
+                )}
                 <button 
                   onClick={() => setDarkMode(!darkMode)} 
                   className="theme-toggle"
@@ -126,6 +134,26 @@ function App() {
                 <Profile user={user} onUserUpdate={handleUserUpdate} />
               ) : (
                 <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              user && user.is_admin ? (
+                <AdminGames user={user} onClose={() => window.history.back()} />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/admin/feedback"
+            element={
+              user && user.is_admin ? (
+                <FeedbackAdmin user={user} />
+              ) : (
+                <Navigate to="/" replace />
               )
             }
           />

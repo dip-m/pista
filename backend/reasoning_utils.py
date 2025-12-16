@@ -43,6 +43,47 @@ def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, objec
     artists = fetch("game_artists", "artists", "artist_id")
     publishers = fetch("game_publishers", "publishers", "publisher_id")
     
+    # Apply feature modifications from FeatureMod table
+    cur = conn.execute(
+        """SELECT feature_type, feature_id, action 
+           FROM feature_mods 
+           WHERE game_id = ? 
+           ORDER BY created_at DESC""",
+        (game_id,)
+    )
+    mods = cur.fetchall()
+    
+    # Create feature type to table mapping
+    feature_tables = {
+        "mechanics": ("mechanics", mechanics),
+        "categories": ("categories", categories),
+        "families": ("families", families),
+        "designers": ("designers", designers),
+        "artists": ("artists", artists),
+        "publishers": ("publishers", publishers),
+    }
+    
+    # Apply modifications
+    for mod in mods:
+        feature_type = mod[0]
+        feature_id = mod[1]
+        action = mod[2]
+        
+        if feature_type not in feature_tables:
+            continue
+        
+        table_name, feature_set = feature_tables[feature_type]
+        
+        # Get feature name
+        cur = conn.execute(f"SELECT name FROM {table_name} WHERE id = ?", (feature_id,))
+        row = cur.fetchone()
+        if row:
+            feature_name = row[0]
+            if action == "add":
+                feature_set.add(feature_name)
+            elif action == "remove":
+                feature_set.discard(feature_name)
+    
     # Get player count info from games table and polls_json
     cur = conn.execute(
         "SELECT min_players, max_players, polls_json FROM games WHERE id = ?",

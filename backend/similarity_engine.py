@@ -264,7 +264,7 @@ class SimilarityEngine:
                 "language_dependence": language_dependence,
             }
 
-            if explain:
+            if explain and base_features:
                 try:
                     other_features = get_game_features(self.conn, gid)
                     meta_score, overlaps, scores = compute_meta_similarity(base_features, other_features)
@@ -305,8 +305,19 @@ class SimilarityEngine:
                         record["game_id"] = saved_game_id
                     record["reason_summary"] = build_reason_summary(base_features, overlaps)
                 except Exception as e:
-                    logger.warning(f"Error processing game {gid} in explain mode: {e}")
+                    logger.warning(f"Error processing game {gid} in explain mode: {e}", exc_info=True)
                     # Fall back to embedding-only for this game
+                    record["final_score"] = record["embedding_similarity"]
+                    record["reason_summary"] = "Similarity based on embeddings only"
+            elif explain and not base_features:
+                # explain=True but base_features unavailable - still try to get other_features for basic info
+                try:
+                    other_features = get_game_features(self.conn, gid)
+                    # Can't compute meta_similarity without base_features, but we can still provide basic info
+                    record["final_score"] = record["embedding_similarity"]
+                    record["reason_summary"] = "Similarity based on embeddings only (base game features unavailable)"
+                except Exception as e:
+                    logger.debug(f"Could not get features for game {gid}: {e}")
                     record["final_score"] = record["embedding_similarity"]
                     record["reason_summary"] = "Similarity based on embeddings only"
 
@@ -439,38 +450,43 @@ class SimilarityEngine:
         if target_playtime is None:
             return True
         
-        # Fetch playing_time from database
-        cur = self.conn.execute(
-            "SELECT playing_time, min_playing_time, max_playing_time FROM games WHERE id = ?",
-            (game_id,)
-        )
-        row = cur.fetchone()
-        if not row:
+        try:
+            # Fetch playing_time from database
+            cur = self.conn.execute(
+                "SELECT playing_time, min_playtime, max_playtime FROM games WHERE id = ?",
+                (game_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return True
+            
+            playing_time = int(row[0]) if row[0] is not None else None
+            min_playing_time = int(row[1]) if row[1] is not None else None
+            max_playing_time = int(row[2]) if row[2] is not None else None
+            
+            # Use playing_time if available, otherwise use min/max average
+            if playing_time is not None:
+                actual_time = playing_time
+            elif min_playing_time is not None and max_playing_time is not None:
+                actual_time = (min_playing_time + max_playing_time) / 2
+            elif min_playing_time is not None:
+                actual_time = min_playing_time
+            elif max_playing_time is not None:
+                actual_time = max_playing_time
+            else:
+                # No playtime data available, allow it
+                return True
+            
+            # Check if actual_time is within tolerance of target
+            tolerance_range = target_playtime * tolerance
+            min_time = target_playtime - tolerance_range
+            max_time = target_playtime + tolerance_range
+            
+            return min_time <= actual_time <= max_time
+        except (sqlite3.Error, ValueError, TypeError) as e:
+            logger.warning(f"Error checking playtime constraints for game {game_id}: {e}")
+            # On error, allow the game through (don't filter it out)
             return True
-        
-        playing_time = int(row[0]) if row[0] is not None else None
-        min_playing_time = int(row[1]) if row[1] is not None else None
-        max_playing_time = int(row[2]) if row[2] is not None else None
-        
-        # Use playing_time if available, otherwise use min/max average
-        if playing_time is not None:
-            actual_time = playing_time
-        elif min_playing_time is not None and max_playing_time is not None:
-            actual_time = (min_playing_time + max_playing_time) / 2
-        elif min_playing_time is not None:
-            actual_time = min_playing_time
-        elif max_playing_time is not None:
-            actual_time = max_playing_time
-        else:
-            # No playtime data available, allow it
-            return True
-        
-        # Check if actual_time is within tolerance of target
-        tolerance_range = target_playtime * tolerance
-        min_time = target_playtime - tolerance_range
-        max_time = target_playtime + tolerance_range
-        
-        return min_time <= actual_time <= max_time
 
     def _satisfies_constraints(
         self,

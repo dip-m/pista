@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
 import Marketplace from "./Marketplace";
+import GameFeaturesEditor from "./GameFeaturesEditor";
 
 // Common prompts that can be used as chips
 const COMMON_PROMPTS = [
@@ -47,7 +48,10 @@ function PistaChat({ user }) {
   const [showGameSearch, setShowGameSearch] = useState(false);
   const [atMentionActive, setAtMentionActive] = useState(false);
   const [atMentionPosition, setAtMentionPosition] = useState(0);
+  const [atMentionQuery, setAtMentionQuery] = useState("");
   const [marketplaceGame, setMarketplaceGame] = useState(null);
+  const [featuresEditorGame, setFeaturesEditorGame] = useState(null);
+  const [helpfulQuestion, setHelpfulQuestion] = useState(null);
 
   const loadChatHistory = useCallback(async () => {
     setLoadingHistory(true);
@@ -69,17 +73,37 @@ function PistaChat({ user }) {
   useEffect(() => {
     if (user) {
       loadChatHistory();
+      loadHelpfulQuestion();
     }
   }, [loadChatHistory, user]);
 
+  const loadHelpfulQuestion = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/feedback/questions/helpful`, {
+        headers: authService.getAuthHeaders(),
+      });
+      if (res.ok) {
+        const question = await res.json();
+        if (question) {
+          setHelpfulQuestion(question);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load helpful question:", err);
+    }
+  };
+
   const handleGameSearch = async (query) => {
-    if (query.length < 2) {
+    // Allow spaces and multiple keywords - trim but don't restrict
+    const trimmedQuery = query.trim();
+    if (trimmedQuery.length < 2) {
       setGameSearchResults([]);
       setShowGameSearch(false);
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/games/search?q=${encodeURIComponent(query)}&limit=5`);
+      // Increase limit to 20 for better results
+      const res = await fetch(`${API_BASE}/games/search?q=${encodeURIComponent(trimmedQuery)}&limit=20`);
       if (res.ok) {
         const data = await res.json();
         setGameSearchResults(data);
@@ -97,55 +121,96 @@ function PistaChat({ user }) {
     setInput(value);
     setCursorPosition(cursorPos);
 
-    // Check for @ mention
-    const textBeforeCursor = value.substring(0, cursorPos);
-    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-    
-    if (lastAtIndex !== -1) {
-      // Check if @ is not part of an email or already completed mention
-      const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
-      // Check if there's a space or newline after @ (mention completed)
-      const hasSpaceAfterAt = textAfterAt.includes(' ') || textAfterAt.includes('\n');
-      // Simple check: if @ is followed by alphanumeric and no space, it's an active mention
-      const isActiveMention = /^[a-zA-Z0-9]*$/.test(textAfterAt) && !hasSpaceAfterAt;
+      // Check for @ mention
+      const textBeforeCursor = value.substring(0, cursorPos);
+      const lastAtIndex = textBeforeCursor.lastIndexOf('@');
       
-      if (isActiveMention) {
-        // @ mention is active
-        const query = textAfterAt;
-        setAtMentionActive(true);
-        setAtMentionPosition(lastAtIndex);
-        if (query.length >= 2) {
-          handleGameSearch(query);
+      if (lastAtIndex !== -1) {
+        // Check if @ is not part of an email or already completed mention
+        const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
+        // Check if there's a newline after @ (mention completed)
+        const hasNewlineAfterAt = textAfterAt.includes('\n');
+        // Allow spaces in search query - check if @ is followed by text (can include spaces)
+        // Only stop if there's a newline or if cursor moved past the query
+        const textAfterCursor = value.substring(cursorPos);
+        const fullTextAfterAt = textAfterAt + textAfterCursor;
+        // Find where the query ends (newline or end of input)
+        const queryEndMatch = fullTextAfterAt.match(/^([^\n]*)/);
+        const query = queryEndMatch ? queryEndMatch[1].trim() : textAfterAt.trim();
+        
+        if (!hasNewlineAfterAt && query.length >= 0) {
+          // @ mention is active - allow spaces in query
+          setAtMentionActive(true);
+          setAtMentionPosition(lastAtIndex);
+          setAtMentionQuery(query); // Store the current query
+          if (query.length >= 2) {
+            handleGameSearch(query);
+          } else {
+            setShowGameSearch(false);
+            setGameSearchResults([]);
+          }
         } else {
+          setAtMentionActive(false);
           setShowGameSearch(false);
           setGameSearchResults([]);
+          setAtMentionQuery("");
         }
       } else {
         setAtMentionActive(false);
         setShowGameSearch(false);
         setGameSearchResults([]);
+        setAtMentionQuery("");
       }
-    } else {
-      setAtMentionActive(false);
-      setShowGameSearch(false);
-      setGameSearchResults([]);
-    }
   };
 
   const handleGameSelectFromMention = (game) => {
     if (!inputRef) return;
     
-    // Find the @ position and query text
     const currentInput = input;
     const textBeforeAt = currentInput.substring(0, atMentionPosition);
-    // Find where the query ends (space, end of string, or cursor position)
     const textAfterAt = currentInput.substring(atMentionPosition + 1);
-    const queryEndMatch = textAfterAt.match(/^[^\s]*/);
-    const queryEnd = queryEndMatch ? queryEndMatch[0].length : 0;
-    const textAfterQuery = currentInput.substring(atMentionPosition + 1 + queryEnd);
     
-    // Replace @query with game name
-    const newText = textBeforeAt + game.name + " " + textAfterQuery;
+    // Find where the search query ends
+    // The query is what we searched for (stored in atMentionQuery) or extract from input
+    let queryText = atMentionQuery || "";
+    
+    if (!queryText) {
+      // Extract query from @ to cursor position
+      const cursorPos = cursorPosition;
+      queryText = currentInput.substring(atMentionPosition + 1, cursorPos).trim();
+    }
+    
+    // Find where this query ends in the input
+    // Match the query text exactly (it can include spaces)
+    let queryEndPos = atMentionPosition + 1;
+    
+    if (queryText) {
+      // Check if the query text appears right after @
+      if (textAfterAt.startsWith(queryText)) {
+        queryEndPos = atMentionPosition + 1 + queryText.length;
+      } else {
+        // Query might have been modified, find it by pattern matching
+        // Match everything from @ until we hit a space that's clearly after the search
+        // This handles cases where user continued typing
+        const match = textAfterAt.match(/^([^\s\n]+(?:\s+[^\s\n]+)*)/);
+        if (match) {
+          queryEndPos = atMentionPosition + 1 + match[0].length;
+        } else {
+          // Fallback: use cursor position
+          queryEndPos = cursorPosition;
+        }
+      }
+    } else {
+      // No query, find first space or use cursor
+      const spaceIndex = textAfterAt.indexOf(' ');
+      queryEndPos = spaceIndex !== -1 ? atMentionPosition + 1 + spaceIndex : cursorPosition;
+    }
+    
+    // Get any text after the query that should be preserved
+    const textAfterQuery = currentInput.substring(queryEndPos).trimStart();
+    
+    // Replace @ + entire query with game name
+    const newText = textBeforeAt + game.name + (textAfterQuery ? " " + textAfterQuery : "");
     setInput(newText);
     
     // Add game to chips if not already present
@@ -157,11 +222,12 @@ function PistaChat({ user }) {
     setAtMentionActive(false);
     setShowGameSearch(false);
     setGameSearchResults([]);
+    setAtMentionQuery("");
     
     // Set cursor position after inserted game name
     setTimeout(() => {
       if (inputRef) {
-        const newPos = textBeforeAt.length + game.name.length + 1;
+        const newPos = textBeforeAt.length + game.name.length + (textAfterQuery ? 1 : 0);
         inputRef.setSelectionRange(newPos, newPos);
         setCursorPosition(newPos);
         inputRef.focus();
@@ -273,6 +339,10 @@ function PistaChat({ user }) {
           text: msg.message,
           results: msg.metadata?.results || [],
           querySpec: msg.metadata?.query_spec || {},
+          messageId: msg.id,
+          liked: false,
+          disliked: false,
+          feedbackQuestion: null,
         }));
         setMessages(formattedMessages);
         setThreadId(threadIdToLoad);
@@ -291,6 +361,169 @@ function PistaChat({ user }) {
     setPlayerChips([]);
     setPlaytimeChips([]);
     setUseCollection(false);
+  };
+
+  const handleLikeDislike = async (messageIndex, action) => {
+    if (!user || !helpfulQuestion) return;
+    
+    const message = messages[messageIndex];
+    if (!message || message.role !== "assistant") return;
+    
+    // Find the option ID for Yes (like) or No (dislike)
+    const option = helpfulQuestion.options?.find(opt => 
+      (action === "like" && opt.text === "Yes") || 
+      (action === "dislike" && opt.text === "No")
+    );
+    
+    if (!option) {
+      console.error("Could not find option for action:", action);
+      return;
+    }
+    
+    // Update local state immediately
+    setMessages((prev) => {
+      const updated = [...prev];
+      updated[messageIndex] = {
+        ...updated[messageIndex],
+        liked: action === "like",
+        disliked: action === "dislike",
+      };
+      return updated;
+    });
+    
+    // Submit feedback
+    try {
+      const res = await fetch(`${API_BASE}/feedback/respond`, {
+        method: "POST",
+        headers: {
+          ...authService.getAuthHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question_id: helpfulQuestion.id,
+          option_id: option.id,
+          response: null,
+          context: JSON.stringify({
+            message_index: messageIndex,
+            message_text: message.text.substring(0, 100), // First 100 chars for context
+          }),
+          thread_id: threadId || null,
+        }),
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        console.error("Failed to submit like/dislike:", errorData);
+        throw new Error(errorData.detail || "Failed to submit feedback");
+      }
+    } catch (err) {
+      console.error("Failed to submit like/dislike:", err);
+      // Revert on error
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[messageIndex] = {
+          ...updated[messageIndex],
+          liked: false,
+          disliked: false,
+        };
+        return updated;
+      });
+    }
+  };
+
+  const handleFeedbackResponse = async (messageIndex, questionId, response) => {
+    if (!user) return;
+    
+    const message = messages[messageIndex];
+    if (!message) return;
+    
+    // Find the question to determine its type
+    const question = message.feedbackQuestion;
+    if (!question) return;
+    
+    // Remove feedback question from message after response
+    setMessages((prev) => {
+      const updated = [...prev];
+      updated[messageIndex] = {
+        ...updated[messageIndex],
+        feedbackQuestion: null,
+      };
+      return updated;
+    });
+    
+    // Handle different response types
+    let optionId = null;
+    let responseText = null;
+    
+    if (question.question_type === "single_select") {
+      // Single select: response is an option object with id
+      if (typeof response === 'object' && response !== null) {
+        if (response.id !== undefined && response.id !== null) {
+          optionId = response.id;
+        } else {
+          console.error("Single select response missing id:", response);
+        }
+      } else if (Array.isArray(response) && response.length > 0 && response[0]?.id) {
+        // Handle array case (shouldn't happen for single_select, but be safe)
+        optionId = response[0].id;
+      } else {
+        console.error("Invalid single_select response format:", response);
+      }
+    } else if (question.question_type === "multi_select") {
+      // Multi select: response is an array of option objects
+      // Store as JSON array of option IDs
+      if (Array.isArray(response) && response.length > 0) {
+        const optionIds = response.map(r => r.id).filter(id => id != null);
+        responseText = JSON.stringify(optionIds);
+      }
+    } else {
+      // Text question: response is a string
+      responseText = typeof response === 'object' ? response.text || JSON.stringify(response) : response;
+    }
+    
+    // Submit feedback
+    try {
+      const requestBody = {
+        question_id: questionId !== null && questionId !== undefined ? questionId : null,
+        option_id: optionId !== null && optionId !== undefined ? optionId : null,
+        response: responseText !== null && responseText !== undefined ? responseText : null,
+        context: JSON.stringify({
+          message_index: messageIndex,
+          message_text: message.text.substring(0, 100),
+        }),
+        thread_id: threadId !== null && threadId !== undefined ? threadId : null,
+      };
+      
+      console.log("Submitting feedback:", {
+        question_type: question.question_type,
+        questionId,
+        optionId,
+        responseText,
+        originalResponse: response,
+        requestBody
+      });
+      
+      const res = await fetch(`${API_BASE}/feedback/respond`, {
+        method: "POST",
+        headers: {
+          ...authService.getAuthHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        console.error("Failed to submit feedback:", errorData);
+        throw new Error(errorData.detail || "Failed to submit feedback");
+      }
+      
+      const result = await res.json();
+      console.log("Feedback submitted successfully:", result);
+    } catch (err) {
+      console.error("Failed to submit feedback:", err);
+      alert(err.message || "Failed to submit feedback. Please try again.");
+    }
   };
 
   const sendMessage = async () => {
@@ -347,9 +580,40 @@ function PistaChat({ user }) {
         text: data.reply_text,
         results: data.results || [],
         querySpec: data.query_spec || {},
+        messageId: Date.now(), // Temporary ID for tracking
+        liked: false,
+        disliked: false,
+        feedbackQuestion: null,
       };
 
       setMessages((prev) => [...prev, botMsg]);
+      
+      // Request feedback question after response and attach to message
+      if (user) {
+        try {
+          const feedbackRes = await fetch(`${API_BASE}/feedback/questions/random`, {
+            headers: authService.getAuthHeaders(),
+          });
+          if (feedbackRes.ok) {
+            const feedbackQuestion = await feedbackRes.json();
+            if (feedbackQuestion) {
+              // Update the last message with the feedback question
+              setMessages((prev) => {
+                const updated = [...prev];
+                if (updated.length > 0 && updated[updated.length - 1].role === "assistant") {
+                  updated[updated.length - 1] = {
+                    ...updated[updated.length - 1],
+                    feedbackQuestion: feedbackQuestion,
+                  };
+                }
+                return updated;
+              });
+            }
+          }
+        } catch (err) {
+          console.error("Failed to get feedback question:", err);
+        }
+      }
       setInput("");
       // Keep game chips for next query in the thread (don't clear them)
       // setGameChips([]); // Removed - persist chips across messages
@@ -419,6 +683,13 @@ function PistaChat({ user }) {
         </div>
       )}
 
+      {featuresEditorGame && (
+        <GameFeaturesEditor
+          gameId={featuresEditorGame.id}
+          gameName={featuresEditorGame.name}
+          onClose={() => setFeaturesEditorGame(null)}
+        />
+      )}
       <div className="pista-chat">
         {user && (
           <div className="chat-header">
@@ -433,7 +704,19 @@ function PistaChat({ user }) {
         <div className="chat-window">
           <MessageList 
             messages={messages} 
-            onGameClick={(game) => setMarketplaceGame({ id: game.game_id, name: game.name })}
+            user={user}
+            onGameClick={(game) => {
+              // Only allow features editor for admin users
+              const isRightClick = window.event && (window.event.button === 2 || window.event.ctrlKey);
+              if (isRightClick && user && user.is_admin) {
+                setFeaturesEditorGame({ id: game.game_id, name: game.name });
+              } else {
+                setMarketplaceGame({ id: game.game_id, name: game.name });
+              }
+            }}
+            onLikeDislike={handleLikeDislike}
+            onFeedbackResponse={handleFeedbackResponse}
+            helpfulQuestion={helpfulQuestion}
           />
         </div>
 
@@ -537,16 +820,38 @@ function PistaChat({ user }) {
           {/* Game search dropdown for @ mentions */}
           {atMentionActive && showGameSearch && gameSearchResults.length > 0 && (
             <div className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000 }}>
-              {gameSearchResults.map((game) => (
-                <div
-                  key={game.id}
-                  className="game-search-item"
-                  onClick={() => selectGame(game)}
-                >
-                  {game.name}
-                  {game.year_published && ` (${game.year_published})`}
-                </div>
-              ))}
+              {gameSearchResults.map((game) => {
+                // Get the current search query to highlight
+                const textBeforeCursor = input.substring(0, cursorPosition);
+                const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+                const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
+                
+                // Highlight matching text in game name - supports multiple words
+                const highlightMatch = (text, query) => {
+                  if (!query) return text;
+                  const words = query.split(/\s+/).filter(w => w.length > 0);
+                  if (words.length === 0) return text;
+                  
+                  // Create regex that matches all words (case insensitive)
+                  const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+                  const regex = new RegExp(`(${pattern})`, 'gi');
+                  const parts = text.split(regex);
+                  return parts.map((part, idx) => 
+                    regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
+                  );
+                };
+                
+                return (
+                  <div
+                    key={game.id}
+                    className="game-search-item"
+                    onClick={() => selectGame(game)}
+                  >
+                    {highlightMatch(game.name, query)}
+                    {game.year_published && ` (${game.year_published})`}
+                  </div>
+                );
+              })}
             </div>
           )}
           <div className="chat-input-row">
@@ -677,11 +982,13 @@ function PistaChat({ user }) {
           </div>
         </div>
       </div>
+      
+      {/* Feedback Question Modal */}
     </div>
   );
 }
 
-function MessageList({ messages, onGameClick }) {
+function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackResponse, helpfulQuestion }) {
   const highlightText = (text, querySpec) => {
     if (!querySpec || !text) return text;
     
@@ -737,6 +1044,33 @@ function MessageList({ messages, onGameClick }) {
                 results={m.results} 
                 onGameClick={onGameClick}
               />
+            )}
+            {m.role === "assistant" && user && helpfulQuestion && (
+              <div className="message-feedback">
+                <div className="like-dislike-buttons">
+                  <button
+                    className={`like-btn ${m.liked ? "active" : ""}`}
+                    onClick={() => onLikeDislike(idx, "like")}
+                    title="Like this response"
+                  >
+                    👍
+                  </button>
+                  <button
+                    className={`dislike-btn ${m.disliked ? "active" : ""}`}
+                    onClick={() => onLikeDislike(idx, "dislike")}
+                    title="Dislike this response"
+                  >
+                    👎
+                  </button>
+                </div>
+                {m.feedbackQuestion && (
+                  <FeedbackQuestionInline
+                    question={m.feedbackQuestion}
+                    messageIndex={idx}
+                    onSubmit={(response) => onFeedbackResponse(idx, m.feedbackQuestion.id, response)}
+                  />
+                )}
+              </div>
             )}
           </div>
         ))
@@ -794,7 +1128,7 @@ function GameResultList({ results, onGameClick }) {
                   </span>
                 )}
               </div>
-              {r.language_dependence && r.language_dependence.level >= 4 && (
+              {r.language_dependence && r.language_dependence.level >= 4 && r.language_dependence.level !== 81 && r.language_dependence.level !== 51 && (
                 <div style={{ 
                   marginTop: "0.5rem", 
                   padding: "0.5rem", 
@@ -811,6 +1145,121 @@ function GameResultList({ results, onGameClick }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function FeedbackQuestionInline({ question, messageIndex, onSubmit }) {
+  const [response, setResponse] = useState("");
+  const [selectedOption, setSelectedOption] = useState(null);
+  const [selectedOptions, setSelectedOptions] = useState([]); // For multi-select
+
+  const handleSubmit = () => {
+    if (question.question_type === "text") {
+      if (response.trim()) {
+        onSubmit(response);
+        setResponse("");
+      }
+    } else if (question.question_type === "single_select") {
+      if (selectedOption) {
+        onSubmit(selectedOption);
+        setSelectedOption(null);
+      }
+    } else if (question.question_type === "multi_select") {
+      if (selectedOptions.length > 0) {
+        onSubmit(selectedOptions);
+        setSelectedOptions([]);
+      }
+    }
+  };
+
+  const handleMultiSelectToggle = (option) => {
+    setSelectedOptions(prev => {
+      const exists = prev.find(o => o.id === option.id);
+      if (exists) {
+        return prev.filter(o => o.id !== option.id);
+      } else {
+        return [...prev, option];
+      }
+    });
+  };
+
+  // Ensure options is an array
+  const options = question.options || [];
+  
+  return (
+    <div className="feedback-question-inline">
+      <div className="feedback-question-text">{question.question_text}</div>
+      
+      {question.question_type === "single_select" && options.length > 0 ? (
+        <div className="feedback-options-inline">
+          {options.map((option, idx) => {
+            const optionId = option.id;
+            const optionText = option.text || option;
+            return (
+              <button
+                key={optionId || idx}
+                type="button"
+                className={`feedback-option-inline ${selectedOption?.id === optionId ? "selected" : ""}`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setSelectedOption(option);
+                  onSubmit(option);
+                }}
+              >
+                {optionText}
+              </button>
+            );
+          })}
+        </div>
+      ) : question.question_type === "multi_select" && options.length > 0 ? (
+        <div className="feedback-multiselect-inline">
+          {options.map((option, idx) => {
+            const optionId = option.id;
+            const optionText = option.text || option;
+            const isSelected = selectedOptions.some(o => o.id === optionId);
+            return (
+              <button
+                key={optionId || idx}
+                type="button"
+                className={`feedback-option-inline ${isSelected ? "selected" : ""}`}
+                onClick={() => handleMultiSelectToggle(option)}
+              >
+                {optionText}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            className="feedback-submit-inline"
+            onClick={handleSubmit}
+            disabled={selectedOptions.length === 0}
+          >
+            Submit
+          </button>
+        </div>
+      ) : question.question_type === "text" ? (
+        <div className="feedback-text-inline">
+          <textarea
+            className="feedback-textarea-inline"
+            value={response}
+            onChange={(e) => setResponse(e.target.value)}
+            placeholder="Your feedback..."
+            rows={3}
+          />
+          <button
+            type="button"
+            className="feedback-submit-inline"
+            onClick={handleSubmit}
+            disabled={!response.trim()}
+          >
+            Submit
+          </button>
+        </div>
+      ) : (
+        <div className="feedback-error">Invalid question type or missing options</div>
+      )}
     </div>
   );
 }

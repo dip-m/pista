@@ -1,4 +1,4 @@
-﻿# backend/app/main.py
+# backend/app/main.py
 from typing import Dict, Any, Optional, Set, List
 
 import json
@@ -54,6 +54,21 @@ class ChatRequest(BaseModel):
     selected_game_id: Optional[int] = None  # Game selected from search, bypasses NLU
 
 
+class FeedbackQuestionRequest(BaseModel):
+    question_text: str
+    question_type: str
+    is_active: bool = True
+    options: Optional[List[str]] = None
+
+
+class FeedbackResponseRequest(BaseModel):
+    question_id: Optional[int] = None
+    option_id: Optional[int] = None
+    response: Optional[str] = None
+    context: Optional[str] = None
+    thread_id: Optional[int] = None
+
+
 class ChatResponse(BaseModel):
     reply_text: str
     results: Optional[List[Dict[str, Any]]] = None
@@ -80,6 +95,7 @@ class UserResponse(BaseModel):
     id: int
     username: str
     bgg_id: Optional[str] = None
+    is_admin: bool = False
     
     class Config:
         # Allow string values for bgg_id even if database returns different type
@@ -137,11 +153,16 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
             return None
         
         # Verify user exists
-        cur = ENGINE_CONN.execute("SELECT id, username, bgg_id FROM users WHERE id = ?", (int(user_id),))
+        cur = ENGINE_CONN.execute("SELECT id, username, bgg_id, is_admin FROM users WHERE id = ?", (int(user_id),))
         user = cur.fetchone()
         if user is None:
             return None
-        return {"id": user[0], "username": user[1], "bgg_id": user[2] if len(user) > 2 else None}
+        return {
+            "id": user[0], 
+            "username": user[1], 
+            "bgg_id": user[2] if len(user) > 2 else None,
+            "is_admin": bool(user[3] if len(user) > 3 else 0)
+        }
     except Exception as e:
         logger.debug(f"Error getting current user: {e}", exc_info=True)
         return None
@@ -152,6 +173,17 @@ def get_current_user_required(credentials: Optional[HTTPAuthorizationCredentials
     user = get_current_user(credentials)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    return user
+
+
+def get_current_admin_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Dict[str, Any]:
+    """Get current admin user from JWT token. Raises exception if not authenticated or not admin."""
+    user = get_current_user_required(credentials)
+    # Check if user is admin in database (token might be stale)
+    cur = ENGINE_CONN.execute("SELECT is_admin FROM users WHERE id = ?", (user["id"],))
+    row = cur.fetchone()
+    if not row or not row[0]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return user
 
 
@@ -210,6 +242,41 @@ def on_startup() -> None:
             logger.info("Migration complete")
     except sqlite3.Error as e:
         logger.warning(f"Migration check failed (may already be migrated): {e}")
+    
+    # Add is_admin column if it doesn't exist
+    try:
+        cur = ENGINE_CONN.execute("PRAGMA table_info(users)")
+        columns = {row[1]: row[2] for row in cur.fetchall()}
+        if 'is_admin' not in columns:
+            logger.info("Adding is_admin column to users table")
+            ENGINE_CONN.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+            ENGINE_CONN.commit()
+    except sqlite3.Error as e:
+        logger.warning(f"Error adding is_admin column (may already exist): {e}")
+    
+    # Create admin user if it doesn't exist
+    try:
+        from backend.auth_utils import hash_password
+        cur = ENGINE_CONN.execute("SELECT id FROM users WHERE username = ?", ("admin",))
+        admin_user = cur.fetchone()
+        if not admin_user:
+            logger.info("Creating admin user")
+            admin_password_hash = hash_password("admin")
+            ENGINE_CONN.execute(
+                "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
+                ("admin", admin_password_hash, 1)
+            )
+            ENGINE_CONN.commit()
+            logger.info("Admin user created: username=admin, password=admin")
+        else:
+            # Ensure existing admin user has is_admin=1
+            ENGINE_CONN.execute(
+                "UPDATE users SET is_admin = 1 WHERE username = ?",
+                ("admin",)
+            )
+            ENGINE_CONN.commit()
+    except sqlite3.Error as e:
+        logger.warning(f"Error creating/updating admin user: {e}")
 
     index = faiss.read_index(index_path)
     id_map = load_id_map(os.path.join(BASE_DIR, "gen", "game_ids.json"))
@@ -303,10 +370,16 @@ def get_current_user_info(current_user: Optional[Dict[str, Any]] = Depends(get_c
     bgg_id = current_user.get("bgg_id")
     if bgg_id is not None:
         bgg_id = str(bgg_id)  # Convert to string if it's not already
+    # Ensure is_admin is included
+    if "is_admin" not in current_user:
+        cur = ENGINE_CONN.execute("SELECT is_admin FROM users WHERE id = ?", (current_user["id"],))
+        row = cur.fetchone()
+        current_user["is_admin"] = bool(row[0] if row else 0)
     return UserResponse(
         id=current_user["id"],
         username=current_user["username"],
-        bgg_id=bgg_id
+        bgg_id=bgg_id,
+        is_admin=current_user.get("is_admin", False)
     )
 
 
@@ -949,6 +1022,171 @@ async def generate_from_image(
         raise HTTPException(status_code=500, detail=f"Failed to process image: {str(e)}")
 
 
+@app.get("/games/{game_id}/features")
+def get_game_features_endpoint(game_id: int, current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)):
+    """Get all features for a game, including original and modifications. Admin only."""
+    try:
+        # Get original features
+        features = get_game_features(ENGINE_CONN, game_id)
+        
+        # Get feature modifications
+        cur = ENGINE_CONN.execute(
+            """SELECT feature_type, feature_id, action 
+               FROM feature_mods 
+               WHERE game_id = ? 
+               ORDER BY created_at DESC""",
+            (game_id,)
+        )
+        mods = cur.fetchall()
+        
+        # Apply modifications to get final feature set
+        final_features = {
+            "mechanics": set(features.get("mechanics", set())),
+            "categories": set(features.get("categories", set())),
+            "designers": set(features.get("designers", set())),
+            "artists": set(features.get("artists", set())),
+            "publishers": set(features.get("publishers", set())),
+            "families": set(features.get("families", set())),
+        }
+        
+        # Get all available features for each type
+        available_features = {}
+        for feature_type in ["mechanics", "categories", "designers", "artists", "publishers", "families"]:
+            table_name = feature_type if feature_type != "families" else "families"
+            cur = ENGINE_CONN.execute(f"SELECT id, name FROM {table_name} ORDER BY name")
+            available_features[feature_type] = [{"id": row[0], "name": row[1]} for row in cur.fetchall()]
+        
+        # Apply modifications
+        for mod in mods:
+            feature_type = mod[0]
+            feature_id = mod[1]
+            action = mod[2]
+            
+            # Find feature name
+            table_name = feature_type if feature_type != "families" else "families"
+            cur = ENGINE_CONN.execute(f"SELECT name FROM {table_name} WHERE id = ?", (feature_id,))
+            row = cur.fetchone()
+            if row:
+                feature_name = row[0]
+                if action == "add":
+                    final_features[feature_type].add(feature_name)
+                elif action == "remove":
+                    final_features[feature_type].discard(feature_name)
+        
+        return {
+            "game_id": game_id,
+            "original_features": {
+                "mechanics": list(features.get("mechanics", set())),
+                "categories": list(features.get("categories", set())),
+                "designers": list(features.get("designers", set())),
+                "artists": list(features.get("artists", set())),
+                "publishers": list(features.get("publishers", set())),
+                "families": list(features.get("families", set())),
+            },
+            "final_features": {
+                "mechanics": list(final_features["mechanics"]),
+                "categories": list(final_features["categories"]),
+                "designers": list(final_features["designers"]),
+                "artists": list(final_features["artists"]),
+                "publishers": list(final_features["publishers"]),
+                "families": list(final_features["families"]),
+            },
+            "modifications": [{"feature_type": m[0], "feature_id": m[1], "action": m[2]} for m in mods],
+            "available_features": available_features,
+        }
+    except Exception as e:
+        logger.error(f"Error getting game features: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get game features: {str(e)}")
+
+
+@app.post("/games/{game_id}/features/modify")
+def modify_game_features(
+    game_id: int,
+    feature_type: str,
+    feature_id: int,
+    action: str,  # 'add' or 'remove'
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Add or remove a feature modification for a game."""
+    if action not in ["add", "remove"]:
+        raise HTTPException(status_code=400, detail="Action must be 'add' or 'remove'")
+    
+    if feature_type not in ["mechanics", "categories", "designers", "artists", "publishers", "families"]:
+        raise HTTPException(status_code=400, detail="Invalid feature type")
+    
+    try:
+        # Verify game exists
+        cur = ENGINE_CONN.execute("SELECT id FROM games WHERE id = ?", (game_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Game not found")
+        
+        # Verify feature exists
+        table_name = feature_type if feature_type != "families" else "families"
+        cur = ENGINE_CONN.execute(f"SELECT id FROM {table_name} WHERE id = ?", (feature_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Feature not found")
+        
+        # Check if modification already exists
+        cur = ENGINE_CONN.execute(
+            """SELECT id FROM feature_mods 
+               WHERE game_id = ? AND feature_type = ? AND feature_id = ? AND action = ?""",
+            (game_id, feature_type, feature_id, action)
+        )
+        existing = cur.fetchone()
+        
+        if existing:
+            # Modification already exists, return success
+            return {"success": True, "message": "Modification already exists"}
+        
+        # Remove opposite action if it exists
+        opposite_action = "remove" if action == "add" else "add"
+        ENGINE_CONN.execute(
+            """DELETE FROM feature_mods 
+               WHERE game_id = ? AND feature_type = ? AND feature_id = ? AND action = ?""",
+            (game_id, feature_type, feature_id, opposite_action)
+        )
+        
+        # Add new modification
+        ENGINE_CONN.execute(
+            """INSERT INTO feature_mods (game_id, feature_type, feature_id, action)
+               VALUES (?, ?, ?, ?)""",
+            (game_id, feature_type, feature_id, action)
+        )
+        ENGINE_CONN.commit()
+        
+        return {"success": True, "message": f"Feature {action}ed successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error modifying game features: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to modify features: {str(e)}")
+
+
+@app.delete("/games/{game_id}/features/modify/{mod_id}")
+def remove_feature_modification(
+    game_id: int,
+    mod_id: int,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Remove a feature modification."""
+    try:
+        cur = ENGINE_CONN.execute(
+            "DELETE FROM feature_mods WHERE id = ? AND game_id = ?",
+            (mod_id, game_id)
+        )
+        ENGINE_CONN.commit()
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Modification not found")
+        
+        return {"success": True, "message": "Modification removed"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing feature modification: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to remove modification: {str(e)}")
+
+
 @app.get("/marketplace/search")
 def search_marketplace_endpoint(
     game_id: int,
@@ -987,4 +1225,413 @@ def search_marketplace_endpoint(
     except Exception as e:
         logger.error(f"Error searching marketplace: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to search marketplace: {str(e)}")
+
+
+@app.get("/feedback/questions/random")
+def get_random_feedback_question(current_user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    """Get a random active feedback question with its options."""
+    try:
+        cur = ENGINE_CONN.execute(
+            """SELECT id, question_text, question_type 
+               FROM feedback_questions 
+               WHERE is_active = 1 
+               ORDER BY RANDOM() 
+               LIMIT 1"""
+        )
+        row = cur.fetchone()
+        
+        if not row:
+            return None
+        
+        question_id = row[0]
+        
+        # Get options for this question with their IDs
+        cur = ENGINE_CONN.execute(
+            """SELECT id, option_text FROM feedback_question_options 
+               WHERE question_id = ? 
+               ORDER BY display_order, id""",
+            (question_id,)
+        )
+        options = [{"id": opt[0], "text": opt[1]} for opt in cur.fetchall()]
+        
+        return {
+            "id": question_id,
+            "question_text": row[1],
+            "question_type": row[2],
+            "options": options if options else None
+        }
+    except Exception as e:
+        logger.error(f"Error getting feedback question: {e}", exc_info=True)
+        return None
+
+
+@app.get("/feedback/questions/helpful")
+def get_helpful_question(current_user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    """Get or create the 'Were these results helpful?' question with Yes/No options."""
+    try:
+        # Try to find existing question
+        cur = ENGINE_CONN.execute(
+            """SELECT id FROM feedback_questions 
+               WHERE question_text = 'Were these results helpful?' 
+               LIMIT 1"""
+        )
+        row = cur.fetchone()
+        
+        if row:
+            question_id = row[0]
+        else:
+            # Create the question if it doesn't exist
+            cur = ENGINE_CONN.execute(
+                """INSERT INTO feedback_questions (question_text, question_type, is_active)
+                   VALUES (?, ?, ?)""",
+                ("Were these results helpful?", "single_select", 1)
+            )
+            question_id = cur.lastrowid
+            
+            # Create Yes and No options
+            ENGINE_CONN.execute(
+                """INSERT INTO feedback_question_options (question_id, option_text, display_order)
+                   VALUES (?, ?, ?)""",
+                (question_id, "Yes", 0)
+            )
+            ENGINE_CONN.execute(
+                """INSERT INTO feedback_question_options (question_id, option_text, display_order)
+                   VALUES (?, ?, ?)""",
+                (question_id, "No", 1)
+            )
+            ENGINE_CONN.commit()
+        
+        # Get options with their IDs
+        cur = ENGINE_CONN.execute(
+            """SELECT id, option_text FROM feedback_question_options 
+               WHERE question_id = ? 
+               ORDER BY display_order, id""",
+            (question_id,)
+        )
+        options = [{"id": opt[0], "text": opt[1]} for opt in cur.fetchall()]
+        
+        return {
+            "id": question_id,
+            "question_text": "Were these results helpful?",
+            "question_type": "single_select",
+            "options": options
+        }
+    except Exception as e:
+        logger.error(f"Error getting helpful question: {e}", exc_info=True)
+        return None
+
+
+@app.post("/feedback/respond")
+def submit_feedback_response(
+    req: FeedbackResponseRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user_required)
+):
+    """Submit a feedback response.
+    For single_select questions, use option_id.
+    For multi_select questions, response should be JSON array of option IDs.
+    For text questions, use response."""
+    try:
+        question_type = None
+        question_id = req.question_id
+        option_id = req.option_id
+        response = req.response
+        context = req.context
+        thread_id = req.thread_id
+        
+        logger.debug(f"Feedback response: question_id={question_id}, option_id={option_id}, response={response}, context={context}, thread_id={thread_id}, user_id={current_user['id']}")
+        
+        # Verify question exists if provided
+        if question_id is not None:
+            cur = ENGINE_CONN.execute(
+                "SELECT id, question_type FROM feedback_questions WHERE id = ? AND is_active = 1",
+                (question_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Question not found")
+            
+            question_type = row[1]
+            
+            # For single_select, verify option_id exists and belongs to this question
+            if question_type == "single_select":
+                if option_id is None:
+                    raise HTTPException(status_code=400, detail="option_id required for single_select questions")
+                cur = ENGINE_CONN.execute(
+                    "SELECT id FROM feedback_question_options WHERE id = ? AND question_id = ?",
+                    (option_id, question_id)
+                )
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Option not found or doesn't belong to question")
+            # For multi_select, response should contain JSON array of option IDs
+            elif question_type == "multi_select":
+                if not response:
+                    raise HTTPException(status_code=400, detail="response required for multi_select questions (should be JSON array of option IDs)")
+                try:
+                    option_ids = json.loads(response)
+                    if not isinstance(option_ids, list):
+                        raise HTTPException(status_code=400, detail="response must be a JSON array for multi_select questions")
+                    # Verify all option IDs exist and belong to this question
+                    for opt_id in option_ids:
+                        cur = ENGINE_CONN.execute(
+                            "SELECT id FROM feedback_question_options WHERE id = ? AND question_id = ?",
+                            (opt_id, question_id)
+                        )
+                        if not cur.fetchone():
+                            raise HTTPException(status_code=404, detail=f"Option {opt_id} not found or doesn't belong to question")
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="Invalid JSON in response for multi_select question")
+        
+        # For multi_select, create one response record per selected option
+        if question_type == "multi_select" and response:
+            try:
+                option_ids = json.loads(response)
+                for opt_id in option_ids:
+                    ENGINE_CONN.execute(
+                        """INSERT INTO user_feedback_responses 
+                           (user_id, question_id, option_id, response, context, thread_id)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (
+                            int(current_user["id"]), 
+                            question_id, 
+                            opt_id,  # Each option gets its own record
+                            None,  # response field is None for multi_select (option_id is used)
+                            context if context is not None else None, 
+                            thread_id if thread_id is not None else None
+                        )
+                    )
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="Invalid JSON in response")
+        else:
+            # For single_select or text, create a single response record
+            # Ensure all fields are properly set
+            logger.debug(f"Inserting feedback: user_id={int(current_user['id'])}, question_id={question_id}, option_id={option_id}, response={response}, context={context}, thread_id={thread_id}")
+            ENGINE_CONN.execute(
+                """INSERT INTO user_feedback_responses 
+                   (user_id, question_id, option_id, response, context, thread_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    int(current_user["id"]),  # Ensure user_id is int
+                    question_id,
+                    option_id,
+                    response,
+                    context,
+                    thread_id
+                )
+            )
+        
+        ENGINE_CONN.commit()
+        
+        # Verify the record was inserted
+        cur = ENGINE_CONN.execute(
+            "SELECT id, user_id, question_id, option_id, response, context, thread_id FROM user_feedback_responses WHERE id = (SELECT MAX(id) FROM user_feedback_responses WHERE user_id = ?)",
+            (int(current_user["id"]),)
+        )
+        inserted_record = cur.fetchone()
+        if inserted_record:
+            logger.info(f"Feedback response saved: id={inserted_record[0]}, user_id={inserted_record[1]}, question_id={inserted_record[2]}, option_id={inserted_record[3]}, response={inserted_record[4]}, context={inserted_record[5]}, thread_id={inserted_record[6]}")
+        else:
+            logger.warning("Feedback response inserted but could not verify")
+        
+        return {"success": True, "message": "Feedback submitted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error submitting feedback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to submit feedback: {str(e)}")
+
+
+@app.get("/admin/games")
+def get_all_games(
+    page: int = 1,
+    per_page: int = 50,
+    search: Optional[str] = None,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Get all games in database for admin use."""
+    try:
+        offset = (page - 1) * per_page
+        
+        if search:
+            search_term = f"%{search}%"
+            count_sql = "SELECT COUNT(*) FROM games WHERE name LIKE ?"
+            count_params = (search_term,)
+            sql = "SELECT id, name, year_published, thumbnail FROM games WHERE name LIKE ? ORDER BY name LIMIT ? OFFSET ?"
+            params = (search_term, per_page, offset)
+        else:
+            count_sql = "SELECT COUNT(*) FROM games"
+            count_params = ()
+            sql = "SELECT id, name, year_published, thumbnail FROM games ORDER BY name LIMIT ? OFFSET ?"
+            params = (per_page, offset)
+        
+        cur = ENGINE_CONN.execute(count_sql, count_params)
+        total = cur.fetchone()[0]
+        
+        cur = ENGINE_CONN.execute(sql, params)
+        games = []
+        for row in cur.fetchall():
+            games.append({
+                "id": row[0],
+                "name": row[1],
+                "year_published": row[2],
+                "thumbnail": row[3]
+            })
+        
+        return {
+            "games": games,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total + per_page - 1) // per_page
+        }
+    except Exception as e:
+        logger.error(f"Error getting all games: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get games: {str(e)}")
+
+
+# Admin endpoints for feedback questions
+@app.get("/admin/feedback/questions")
+def get_all_feedback_questions(
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Get all feedback questions with their options."""
+    try:
+        cur = ENGINE_CONN.execute(
+            """SELECT id, question_text, question_type, is_active, created_at 
+               FROM feedback_questions 
+               ORDER BY created_at DESC"""
+        )
+        questions = []
+        for row in cur.fetchall():
+            question_id = row[0]
+            # Get options for this question
+            cur_opts = ENGINE_CONN.execute(
+                """SELECT id, option_text, display_order 
+                   FROM feedback_question_options 
+                   WHERE question_id = ? 
+                   ORDER BY display_order, id""",
+                (question_id,)
+            )
+            options = [
+                {"id": opt[0], "text": opt[1], "display_order": opt[2]}
+                for opt in cur_opts.fetchall()
+            ]
+            questions.append({
+                "id": question_id,
+                "question_text": row[1],
+                "question_type": row[2],
+                "is_active": bool(row[3]),
+                "created_at": row[4],
+                "options": options
+            })
+        return {"questions": questions}
+    except Exception as e:
+        logger.error(f"Error getting feedback questions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get feedback questions: {str(e)}")
+
+
+@app.post("/admin/feedback/questions")
+def create_feedback_question(
+    req: FeedbackQuestionRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Create a new feedback question."""
+    try:
+        if req.question_type not in ["text", "single_select", "multi_select"]:
+            raise HTTPException(status_code=400, detail="Invalid question type")
+        
+        # Insert question
+        cur = ENGINE_CONN.execute(
+            """INSERT INTO feedback_questions (question_text, question_type, is_active)
+               VALUES (?, ?, ?)""",
+            (req.question_text, req.question_type, 1 if req.is_active else 0)
+        )
+        question_id = cur.lastrowid
+        
+        # Insert options if provided (for single_select or multi_select)
+        if req.options and req.question_type in ["single_select", "multi_select"]:
+            for idx, option_text in enumerate(req.options):
+                if option_text.strip():  # Only insert non-empty options
+                    ENGINE_CONN.execute(
+                        """INSERT INTO feedback_question_options (question_id, option_text, display_order)
+                           VALUES (?, ?, ?)""",
+                        (question_id, option_text, idx)
+                    )
+        
+        ENGINE_CONN.commit()
+        return {"success": True, "question_id": question_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating feedback question: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create question: {str(e)}")
+
+
+@app.put("/admin/feedback/questions/{question_id}")
+def update_feedback_question(
+    question_id: int,
+    req: FeedbackQuestionRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Update a feedback question."""
+    try:
+        # Verify question exists
+        cur = ENGINE_CONN.execute("SELECT id FROM feedback_questions WHERE id = ?", (question_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Question not found")
+        
+        if req.question_type not in ["text", "single_select", "multi_select"]:
+            raise HTTPException(status_code=400, detail="Invalid question type")
+        
+        # Update question fields
+        ENGINE_CONN.execute(
+            """UPDATE feedback_questions 
+               SET question_text = ?, question_type = ?, is_active = ?
+               WHERE id = ?""",
+            (req.question_text, req.question_type, 1 if req.is_active else 0, question_id)
+        )
+        
+        # Update options
+        # Delete existing options
+        ENGINE_CONN.execute(
+            "DELETE FROM feedback_question_options WHERE question_id = ?",
+            (question_id,)
+        )
+        # Insert new options if provided (for single_select or multi_select)
+        if req.options and req.question_type in ["single_select", "multi_select"]:
+            for idx, option_text in enumerate(req.options):
+                if option_text.strip():  # Only insert non-empty options
+                    ENGINE_CONN.execute(
+                        """INSERT INTO feedback_question_options (question_id, option_text, display_order)
+                           VALUES (?, ?, ?)""",
+                        (question_id, option_text, idx)
+                    )
+        
+        ENGINE_CONN.commit()
+        return {"success": True, "message": "Question updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating feedback question: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update question: {str(e)}")
+
+
+@app.delete("/admin/feedback/questions/{question_id}")
+def delete_feedback_question(
+    question_id: int,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Delete a feedback question (and its options via CASCADE)."""
+    try:
+        cur = ENGINE_CONN.execute("SELECT id FROM feedback_questions WHERE id = ?", (question_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Question not found")
+        
+        ENGINE_CONN.execute("DELETE FROM feedback_questions WHERE id = ?", (question_id,))
+        ENGINE_CONN.commit()
+        return {"success": True, "message": "Question deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting feedback question: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete question: {str(e)}")
 

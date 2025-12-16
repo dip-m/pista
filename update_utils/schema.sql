@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS users (
     username    TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     bgg_id      TEXT,
+    is_admin    INTEGER DEFAULT 0,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -149,4 +150,46 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     metadata    TEXT,  -- JSON string for results, query_spec, etc.
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS feature_mods (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id     INTEGER NOT NULL,
+    feature_type TEXT NOT NULL,  -- 'mechanic', 'category', 'designer', 'artist', 'publisher', 'family'
+    feature_id  INTEGER NOT NULL,
+    action      TEXT NOT NULL,  -- 'add' or 'remove'
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS feedback_questions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_text TEXT NOT NULL,
+    question_type TEXT NOT NULL,  -- 'rating', 'multiple_choice', 'text', 'like_dislike'
+    is_active   INTEGER DEFAULT 1,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS feedback_question_options (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id INTEGER NOT NULL,
+    option_text TEXT NOT NULL,
+    display_order INTEGER DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (question_id) REFERENCES feedback_questions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_feedback_responses (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    question_id INTEGER,
+    option_id   INTEGER,  -- Reference to feedback_question_options.id for multiple choice questions
+    response    TEXT,  -- Text response for text/rating questions, or like/dislike
+    context     TEXT,  -- Additional context about the feedback (e.g., message_id, thread context)
+    thread_id   INTEGER,  -- Link to chat thread if applicable
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (question_id) REFERENCES feedback_questions(id) ON DELETE SET NULL,
+    FOREIGN KEY (option_id) REFERENCES feedback_question_options(id) ON DELETE SET NULL,
+    FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE SET NULL
 );
