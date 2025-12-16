@@ -53,6 +53,9 @@ class SimilarityEngine:
         explain: bool = True,
         include_features: Optional[List[str]] = None,
         exclude_features: Optional[List[str]] = None,
+        use_rarity_weighting: bool = False,
+        excluded_feature_values: Optional[Dict[str, Set[str]]] = None,
+        required_feature_values: Optional[Dict[str, Set[str]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         constraints: generic constraint spec (see section 2).
@@ -118,9 +121,14 @@ class SimilarityEngine:
 
             if explain:
                 try:
+                    # Validate game_id before calling get_game_features
+                    if game_id is None:
+                        raise ValueError("game_id cannot be None")
+                    game_id = int(game_id)  # Ensure it's an integer
                     base_features = get_game_features(self.conn, game_id)
-                except Exception as e:
+                except (ValueError, TypeError, sqlite3.Error) as e:
                     logger.warning(f"Error getting base features for game_id={game_id}: {e}")
+                    base_features = None
                     explain = False  # Fall back to embedding-only search
         except Exception as e:
             logger.warning(f"Error getting details for game_id={game_id}: {e}")
@@ -128,7 +136,7 @@ class SimilarityEngine:
         
         results: List[Dict[str, Any]] = []
         total_candidates = 0
-        filtered_out = {"invalid_index": 0, "self_excluded": 0, "not_in_allowed": 0, "failed_explain": 0}
+        filtered_out = {"invalid_index": 0, "self_excluded": 0, "not_in_allowed": 0, "failed_explain": 0, "required_features": 0}
         
         
         for sim, gid_or_ix in zip(sims, idxs):
@@ -149,11 +157,26 @@ class SimilarityEngine:
                 # "Closest in my collection" = just pass allowed_ids=user_collection_ids
                 continue
 
-            # Fetch additional game data including num_ratings, ranks_json, year_published, polls_json, min_players, max_players for reordering
-            cur = self.conn.execute(
-                "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players FROM games WHERE id = ?",
-                (gid,)
-            )
+            # Validate gid before querying
+            if gid is None:
+                filtered_out["invalid_index"] += 1
+                continue
+            try:
+                gid = int(gid)
+            except (ValueError, TypeError):
+                filtered_out["invalid_index"] += 1
+                continue
+            
+            # Fetch additional game data including num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description, designers for reordering
+            try:
+                cur = self.conn.execute(
+                    "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = ?",
+                    (gid,)
+                )
+            except sqlite3.Error as e:
+                logger.warning(f"SQL error fetching game {gid}: {e}")
+                filtered_out["failed_explain"] += 1
+                continue
             game_row = cur.fetchone()
             game_name = game_row[0] if game_row else self._fetch_name(gid)
             thumbnail = game_row[1] if game_row and game_row[1] else None
@@ -164,6 +187,20 @@ class SimilarityEngine:
             polls_json_str = game_row[6] if game_row and game_row[6] else None
             min_players = int(game_row[7]) if game_row and game_row[7] is not None else None
             max_players = int(game_row[8]) if game_row and game_row[8] is not None else None
+            description = game_row[9] if game_row and game_row[9] else None
+            
+            # Get designers for this game
+            designers = []
+            try:
+                cur_designers = self.conn.execute(
+                    """SELECT d.name FROM designers d
+                       JOIN game_designers gd ON gd.designer_id = d.id
+                       WHERE gd.game_id = ? ORDER BY d.name""",
+                    (gid,)
+                )
+                designers = [row[0] for row in cur_designers.fetchall()]
+            except sqlite3.Error:
+                pass
             
             # Early exclusion: Check max_players constraint before expensive explain mode
             player_constraints = constraints.get("players", {})
@@ -260,14 +297,65 @@ class SimilarityEngine:
                 "num_ratings": num_ratings,
                 "rank": rank,
                 "year_published": year_published,
+                "description": description,
+                "designers": designers,
                 "embedding_similarity": float(sim) if sim is not None else 0.0,
                 "language_dependence": language_dependence,
             }
 
+            # Check required feature values EARLY (before computing similarity)
+            if required_feature_values:
+                try:
+                    other_features_check = get_game_features(self.conn, gid)
+                except (ValueError, sqlite3.Error) as e:
+                    logger.warning(f"Error getting features for game_id={gid} to check required features: {e}")
+                    # If we can't get features, skip this game (it likely doesn't exist or has invalid data)
+                    continue
+                
+                should_skip = False
+                for feature_type, required_values in required_feature_values.items():
+                    # Normalize feature type name (e.g., "mechanics" -> check "mechanics" key)
+                    feature_key = feature_type
+                    if feature_key in other_features_check:
+                        feature_set = other_features_check[feature_key] if isinstance(other_features_check[feature_key], set) else set(other_features_check[feature_key])
+                        # Normalize feature names for case-insensitive comparison
+                        # Filter out None values before normalizing
+                        feature_set_normalized = {f.lower().strip() for f in feature_set if f is not None}
+                        required_values_normalized = {v.lower().strip() for v in required_values if v is not None}
+                        
+                        # Check if ALL required values are present (case-insensitive)
+                        missing_values = required_values_normalized - feature_set_normalized
+                        if missing_values:
+                            logger.info(f"Game {gid} ({other_features_check.get('name', 'unknown')}) missing required {feature_type} values: {missing_values}. Required: {required_values}, Has: {feature_set}")
+                            should_skip = True
+                            break
+                    else:
+                        # Game doesn't have this feature type at all, so it's missing required values
+                        logger.info(f"Game {gid} ({other_features_check.get('name', 'unknown')}) missing required {feature_type} values {required_values} (no {feature_type} at all)")
+                        should_skip = True
+                        break
+                if should_skip:
+                    filtered_out["required_features"] = filtered_out.get("required_features", 0) + 1
+                    continue
+            
             if explain and base_features:
                 try:
                     other_features = get_game_features(self.conn, gid)
-                    meta_score, overlaps, scores = compute_meta_similarity(base_features, other_features)
+                    
+                    # Apply excluded feature values if provided (remove from consideration)
+                    if excluded_feature_values:
+                        for feature_type, excluded_values in excluded_feature_values.items():
+                            if feature_type in other_features:
+                                # Remove excluded values from other_features
+                                if isinstance(other_features[feature_type], set):
+                                    other_features[feature_type] = other_features[feature_type] - excluded_values
+                    
+                    meta_score, overlaps, scores = compute_meta_similarity(
+                        base_features,
+                        other_features,
+                        conn=self.conn,
+                        use_rarity_weighting=use_rarity_weighting
+                    )
 
                     # Check include/exclude features
                     if include_features:
@@ -324,6 +412,7 @@ class SimilarityEngine:
             results.append(record)
             # Don't break early - collect all 2n matches for reordering
 
+        
         # Reorder by weighted criteria: similarity score + num_ratings + rank + years since publish
         import time
         current_year = time.localtime().tm_year

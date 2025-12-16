@@ -5,6 +5,7 @@ import Profile from "./components/features/Profile";
 import Login from "./components/features/Login";
 import AdminGames from "./components/features/AdminGames";
 import FeedbackAdmin from "./components/features/FeedbackAdmin";
+import ABTestAdmin from "./components/features/ABTestAdmin";
 import { authService } from "./services/auth";
 import "./styles/index.css";
 import "./styles/dark-mode.css";
@@ -84,6 +85,7 @@ function App() {
                   <>
                     <Link to="/admin">Admin Games</Link>
                     <Link to="/admin/feedback">Admin Feedback</Link>
+                    <Link to="/admin/ab-test">A/B Tests</Link>
                   </>
                 )}
                 <button 
@@ -152,6 +154,16 @@ function App() {
             element={
               user && user.is_admin ? (
                 <FeedbackAdmin user={user} />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/admin/ab-test"
+            element={
+              user && user.is_admin ? (
+                <ABTestAdmin user={user} />
               ) : (
                 <Navigate to="/" replace />
               )

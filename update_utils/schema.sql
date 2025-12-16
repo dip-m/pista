@@ -193,3 +193,12 @@ CREATE TABLE IF NOT EXISTS user_feedback_responses (
     FOREIGN KEY (option_id) REFERENCES feedback_question_options(id) ON DELETE SET NULL,
     FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS ab_test_configs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    config_key  TEXT NOT NULL UNIQUE,  -- e.g., 'use_rarity_weighting', 'feature_exclusion_enabled'
+    config_value TEXT NOT NULL,  -- JSON string with config details
+    is_active   INTEGER DEFAULT 0,  -- Whether A/B testing is enabled for this config
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

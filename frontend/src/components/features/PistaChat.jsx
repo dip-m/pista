@@ -52,6 +52,11 @@ function PistaChat({ user }) {
   const [marketplaceGame, setMarketplaceGame] = useState(null);
   const [featuresEditorGame, setFeaturesEditorGame] = useState(null);
   const [helpfulQuestion, setHelpfulQuestion] = useState(null);
+  // eslint-disable-next-line no-unused-vars
+  const [requiredFeatures, setRequiredFeatures] = useState({}); // {messageIndex: {mechanics: Set, categories: Set, ...}}
+  const [activeRequiredFeatures, setActiveRequiredFeatures] = useState([]); // [{type, value, key, messageIndex}, ...] for display in chips
+  
+  // Note: requiredFeatures state is managed via setRequiredFeatures in handleRequireFeature and removeRequiredFeature
 
   const loadChatHistory = useCallback(async () => {
     setLoadingHistory(true);
@@ -526,6 +531,230 @@ function PistaChat({ user }) {
     }
   };
 
+  const handleRequireFeature = (messageIndex, featureType, featureValue) => {
+    setRequiredFeatures((prev) => {
+      const newRequired = { ...prev };
+      if (!newRequired[messageIndex]) {
+        newRequired[messageIndex] = {};
+      }
+      if (!newRequired[messageIndex][featureType]) {
+        newRequired[messageIndex][featureType] = new Set();
+      }
+      // Add the feature to required set
+      newRequired[messageIndex][featureType].add(featureValue);
+      
+      // Update active required features for display
+      setActiveRequiredFeatures((prev) => {
+        const key = `${featureType}:${featureValue}`;
+        if (!prev.find(f => f.key === key)) {
+          return [...prev, { type: featureType, value: featureValue, key, messageIndex }];
+        }
+        return prev;
+      });
+      
+      // Re-query with required feature
+      const message = messages[messageIndex];
+      if (message && message.querySpec) {
+        // Find the original user message that triggered this response
+        // Look backwards from the assistant message to find the user message
+        let originalUserMessage = null;
+        for (let i = messageIndex - 1; i >= 0; i--) {
+          if (messages[i].role === "user") {
+            originalUserMessage = messages[i].text;
+            break;
+          }
+        }
+        
+        if (originalUserMessage) {
+          // Build required feature values object - aggregate ALL required features from ALL messages
+          const required = {};
+          Object.keys(newRequired).forEach(msgIdx => {
+            Object.keys(newRequired[msgIdx]).forEach(ft => {
+              if (!required[ft]) {
+                required[ft] = new Set();
+              }
+              newRequired[msgIdx][ft].forEach(val => required[ft].add(val));
+            });
+          });
+          
+          // Convert Sets to Arrays
+          const requiredArray = {};
+          Object.keys(required).forEach(ft => {
+            requiredArray[ft] = Array.from(required[ft]);
+          });
+          
+          // Re-send the query with required features in context
+          const context = {
+            last_game_id: gameChips.length > 0 ? gameChips[0].id : null,
+            useCollection: useCollection,
+            selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
+            player_chips: playerChips,
+            playtime_chips: playtimeChips.map(c => c.value),
+            required_feature_values: requiredArray, // Pass required features in context
+          };
+          
+          const requestBody = {
+            user_id: user?.id?.toString() || null,
+            message: originalUserMessage,
+            context,
+            thread_id: threadId,
+            selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
+          };
+          
+          fetch(`${API_BASE}/chat`, {
+            method: "POST",
+            headers: {
+              ...authService.getAuthHeaders(),
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(requestBody),
+          })
+          .then(res => res.json())
+          .then(data => {
+            
+            // Build user message text showing the context
+            let userMessageText = originalUserMessage;
+            const contextParts = [];
+            
+            // Add game chips
+            if (gameChips.length > 0) {
+              contextParts.push(`Game: ${gameChips.map(c => c.name).join(", ")}`);
+            }
+            
+            // Add player chips
+            if (playerChips.length > 0) {
+              const playerText = playerChips.map(c => `${c.min}-${c.max} players`).join(", ");
+              contextParts.push(playerText);
+            }
+            
+            // Add playtime chips
+            if (playtimeChips.length > 0) {
+              const playtimeText = playtimeChips.map(c => c.label).join(", ");
+              contextParts.push(`Playtime: ${playtimeText}`);
+            }
+            
+            // Add required features
+            if (Object.keys(requiredArray).length > 0) {
+              const featureParts = [];
+              Object.keys(requiredArray).forEach(ft => {
+                const featureTypeLabel = ft === "mechanics" ? "Mechanics" : 
+                                        ft === "categories" ? "Categories" :
+                                        ft === "themes" ? "Themes" :
+                                        ft === "designers" ? "Designers" :
+                                        ft === "publishers" ? "Publishers" : ft;
+                featureParts.push(`${featureTypeLabel}: ${requiredArray[ft].join(", ")}`);
+              });
+              contextParts.push(`Required: ${featureParts.join("; ")}`);
+            }
+            
+            if (contextParts.length > 0) {
+              userMessageText = `${originalUserMessage} [${contextParts.join(" | ")}]`;
+            }
+            
+            // Add collection context if applicable
+            if (useCollection) {
+              userMessageText += " in my collection";
+            }
+            
+            // Create new user message showing the context
+            const newUserMessage = {
+              role: "user",
+              text: userMessageText,
+              messageId: Date.now(),
+            };
+            
+            // Create new assistant message with updated results (instead of overwriting)
+            setMessages((prev) => {
+              const updated = [...prev];
+              
+              // Add the new user message
+              updated.push(newUserMessage);
+              
+              // Handle A/B test responses
+              if (data.ab_responses && data.ab_responses.length > 0) {
+                const abResp = data.ab_responses[0];
+                const newAssistantMessage = {
+                  role: "assistant",
+                  text: data.reply_text,
+                  querySpec: data.query_spec || {},
+                  messageId: Date.now() + 1,
+                  liked: false,
+                  disliked: false,
+                  abTest: {
+                    config_key: abResp.config_key,
+                    config_name: abResp.config_name,
+                    response_a: {
+                      label: abResp.response_a.label,
+                      results: abResp.response_a.results || [],
+                      config_value: abResp.response_a.config_value
+                    },
+                    response_b: {
+                      label: abResp.response_b.label,
+                      results: abResp.response_b.results || [],
+                      config_value: abResp.response_b.config_value
+                    },
+                    question_id: abResp.question_id,
+                    question_text: abResp.question_text || `Which response do you prefer for ${abResp.config_name}?`,
+                    question_type: "single_select",
+                    options: abResp.options || [
+                      { id: 1, text: abResp.response_a.label },
+                      { id: 2, text: abResp.response_b.label }
+                    ]
+                  },
+                  results: [] // Clear regular results when we have A/B test
+                };
+                updated.push(newAssistantMessage);
+              } else {
+                // Regular single response
+                const newAssistantMessage = {
+                  role: "assistant",
+                  text: data.reply_text,
+                  results: data.results || [],
+                  querySpec: data.query_spec || {},
+                  messageId: Date.now() + 1,
+                  liked: false,
+                  disliked: false,
+                  feedbackQuestion: null,
+                  abTest: null
+                };
+                updated.push(newAssistantMessage);
+              }
+              
+              return updated;
+            });
+          })
+          .catch(err => {
+            console.error("Failed to re-query:", err);
+            alert("Failed to update results. Please try again.");
+          });
+        }
+      }
+      
+      return newRequired;
+    });
+  };
+  
+  const removeRequiredFeature = (key) => {
+    setActiveRequiredFeatures((prev) => {
+      const feature = prev.find(f => f.key === key);
+      if (!feature) return prev;
+      
+      // Remove from requiredFeatures state
+      setRequiredFeatures((prevReq) => {
+        const newRequired = { ...prevReq };
+        if (newRequired[feature.messageIndex] && newRequired[feature.messageIndex][feature.type]) {
+          newRequired[feature.messageIndex][feature.type].delete(feature.value);
+          if (newRequired[feature.messageIndex][feature.type].size === 0) {
+            delete newRequired[feature.messageIndex][feature.type];
+          }
+        }
+        return newRequired;
+      });
+      
+      return prev.filter(f => f.key !== key);
+    });
+  };
+
   const sendMessage = async () => {
     if (!input.trim()) return;
 
@@ -575,18 +804,56 @@ function PistaChat({ user }) {
 
       const data = await res.json();
 
-      const botMsg = {
-        role: "assistant",
-        text: data.reply_text,
-        results: data.results || [],
-        querySpec: data.query_spec || {},
-        messageId: Date.now(), // Temporary ID for tracking
-        liked: false,
-        disliked: false,
-        feedbackQuestion: null,
-      };
+      // Handle A/B test responses
+      if (data.ab_responses && data.ab_responses.length > 0) {
+        // Create a single A/B test message with parallel columns
+        const abResp = data.ab_responses[0]; // For now, handle first A/B test
+        const botMsg = {
+          role: "assistant",
+          text: data.reply_text,
+          querySpec: data.query_spec || {},
+          messageId: Date.now(),
+          liked: false,
+          disliked: false,
+          abTest: {
+            config_key: abResp.config_key,
+            config_name: abResp.config_name,
+            response_a: {
+              label: abResp.response_a.label,
+              results: abResp.response_a.results || [],
+              config_value: abResp.response_a.config_value
+            },
+            response_b: {
+              label: abResp.response_b.label,
+              results: abResp.response_b.results || [],
+              config_value: abResp.response_b.config_value
+            },
+            question_id: abResp.question_id,
+            question_text: abResp.question_text || `Which response do you prefer for ${abResp.config_name}?`,
+            question_type: "single_select",
+            options: abResp.options || [
+              { id: 1, text: abResp.response_a.label },
+              { id: 2, text: abResp.response_b.label }
+            ]
+          }
+        };
+        
+        setMessages((prev) => [...prev, botMsg]);
+      } else {
+        // Regular single response
+        const botMsg = {
+          role: "assistant",
+          text: data.reply_text,
+          results: data.results || [],
+          querySpec: data.query_spec || {},
+          messageId: Date.now(), // Temporary ID for tracking
+          liked: false,
+          disliked: false,
+          feedbackQuestion: null,
+        };
 
-      setMessages((prev) => [...prev, botMsg]);
+        setMessages((prev) => [...prev, botMsg]);
+      }
       
       // Request feedback question after response and attach to message
       if (user) {
@@ -717,6 +984,7 @@ function PistaChat({ user }) {
             onLikeDislike={handleLikeDislike}
             onFeedbackResponse={handleFeedbackResponse}
             helpfulQuestion={helpfulQuestion}
+            onRequireFeature={handleRequireFeature}
           />
         </div>
 
@@ -847,8 +1115,19 @@ function PistaChat({ user }) {
                     className="game-search-item"
                     onClick={() => selectGame(game)}
                   >
-                    {highlightMatch(game.name, query)}
-                    {game.year_published && ` (${game.year_published})`}
+                    <div style={{ fontWeight: "bold" }}>
+                      {highlightMatch(game.name, query)}
+                      {game.year_published && ` (${game.year_published})`}
+                    </div>
+                    {game.features && game.features.length > 0 && (
+                      <div style={{ fontSize: "0.85rem", opacity: 0.7, marginTop: "0.25rem" }}>
+                        {game.features.slice(0, 5).map((f, idx) => (
+                          <span key={idx} style={{ marginRight: "0.5rem" }}>
+                            {f[0]} {f[1]}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -914,7 +1193,31 @@ function PistaChat({ user }) {
                 ))}
               </div>
             )}
-            <input
+            <div style={{ position: "relative", display: "flex", flexDirection: "column" }}>
+              {activeRequiredFeatures.length > 0 && (
+                <div style={{ marginBottom: "0.5rem", padding: "0.5rem", backgroundColor: "var(--bg-secondary, #f5f5f5)", borderRadius: "4px", fontSize: "0.9rem", minHeight: "2rem", border: "1px solid var(--border-color, #ddd)", display: "flex", alignItems: "center", flexWrap: "wrap", gap: "0.25rem" }}>
+                  <span style={{ fontWeight: "bold", marginRight: "0.5rem" }}>Required features:</span>
+                  <span style={{ display: "inline" }}>
+                    {activeRequiredFeatures.map((feature, idx) => (
+                      <span key={feature.key} style={{ display: "inline" }}>
+                        {idx > 0 && <span style={{ margin: "0 0.25rem" }}>, </span>}
+                        <span 
+                          style={{ color: "#1976d2", cursor: "pointer", textDecoration: "underline" }} 
+                          onClick={() => removeRequiredFeature(feature.key)} 
+                          title="Click to remove"
+                        >
+                          {feature.type === "mechanics" && "⚙️ "}
+                          {feature.type === "categories" && "🏷️ "}
+                          {feature.type === "designers" && "👤 "}
+                          {feature.type === "families" && "👨‍👩‍👧‍👦 "}
+                          {feature.value}
+                        </span>
+                      </span>
+                    ))}
+                  </span>
+                </div>
+              )}
+              <input
               ref={setInputRef}
               value={input}
               onChange={handleInputChange}
@@ -935,8 +1238,9 @@ function PistaChat({ user }) {
                   setShowGameSearch(false);
                 }
               }}
-              placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Type @ to search for games, or ask: 'Games in my collection closest to Brass: Birmingham but different theme'"}
-            />
+                placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Type @ to search for games, mechanics, categories, designers, or publishers"}
+              />
+            </div>
             <button onClick={sendMessage}>Send</button>
           </div>
           <div className="image-upload-section">
@@ -988,7 +1292,7 @@ function PistaChat({ user }) {
   );
 }
 
-function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackResponse, helpfulQuestion }) {
+function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackResponse, helpfulQuestion, onRequireFeature }) {
   const highlightText = (text, querySpec) => {
     if (!querySpec || !text) return text;
     
@@ -1039,10 +1343,20 @@ function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackRes
             {m.image && (
               <img src={m.image} alt="Generated" className="generated-image" />
             )}
-            {m.results && m.results.length > 0 && (
+            {m.abTest ? (
+              <ABTestResults 
+                abTest={m.abTest}
+                onGameClick={onGameClick}
+                onRequireFeature={onRequireFeature}
+                messageIndex={idx}
+                onFeedbackResponse={onFeedbackResponse}
+              />
+            ) : m.results && m.results.length > 0 && (
               <GameResultList 
                 results={m.results} 
                 onGameClick={onGameClick}
+                onRequireFeature={onRequireFeature}
+                messageIndex={idx}
               />
             )}
             {m.role === "assistant" && user && helpfulQuestion && (
@@ -1079,7 +1393,31 @@ function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackRes
   );
 }
 
-function GameResultList({ results, onGameClick }) {
+function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand }) {
+  // If expandedGames is passed as prop (for A/B tests), use it; otherwise create local state
+  const [localExpanded, setLocalExpanded] = useState(new Set());
+  const isExpanded = (gameId) => {
+    if (expandedGames !== undefined) {
+      return expandedGames.has(gameId);
+    }
+    return localExpanded.has(gameId);
+  };
+  const handleToggleExpand = (gameId) => {
+    if (toggleExpand) {
+      toggleExpand(gameId);
+    } else {
+      setLocalExpanded((prev) => {
+        const newSet = new Set(prev);
+        if (newSet.has(gameId)) {
+          newSet.delete(gameId);
+        } else {
+          newSet.add(gameId);
+        }
+        return newSet;
+      });
+    }
+  };
+  
   if (!results || results.length === 0) {
     return null;
   }
@@ -1088,63 +1426,232 @@ function GameResultList({ results, onGameClick }) {
     <div className="game-results">
       {results
         .filter(r => r && r.game_id) // Filter out invalid results
-        .map((r) => (
-        <div 
-          className="game-card" 
-          key={r.game_id}
-          onClick={() => onGameClick && onGameClick(r)}
-          style={{ cursor: onGameClick ? "pointer" : "default" }}
-        >
-          <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start" }}>
-            {r.thumbnail && (
-              <img 
-                src={r.thumbnail} 
-                alt={r.name || "Game"}
-                style={{ width: "80px", height: "80px", objectFit: "cover", borderRadius: "4px" }}
-              />
-            )}
-            <div style={{ flex: 1 }}>
-              <div className="game-card__title">{r.name || `Game ${r.game_id}`}</div>
-              {r.reason_summary && (
-                <div className="game-card__reason">{r.reason_summary}</div>
-              )}
-              <div className="game-card__meta">
-                <span>
-                  Similarity:{" "}
-                  {r.final_score !== undefined && r.final_score !== null
-                    ? r.final_score.toFixed(2)
-                    : (r.embedding_similarity !== undefined && r.embedding_similarity !== null
-                        ? r.embedding_similarity.toFixed(2)
-                        : "N/A")}
-                </span>
-                {r.average_rating && (
-                  <span style={{ marginLeft: "1rem" }}>
-                    ⭐ {typeof r.average_rating === 'number' ? r.average_rating.toFixed(1) : r.average_rating}
-                    {r.num_ratings && (
-                      <span style={{ marginLeft: "0.5rem", opacity: 0.7, fontSize: "0.9em" }}>
-                        ({typeof r.num_ratings === 'number' ? r.num_ratings.toLocaleString() : r.num_ratings})
+        .map((r) => {
+          // Extract shared features from overlaps
+          const sharedFeatures = [];
+          if (r.shared_mechanics) {
+            r.shared_mechanics.forEach(m => sharedFeatures.push({ type: "mechanics", value: m }));
+          }
+          if (r.shared_categories) {
+            r.shared_categories.forEach(c => sharedFeatures.push({ type: "categories", value: c }));
+          }
+          if (r.shared_designers) {
+            r.shared_designers.forEach(d => sharedFeatures.push({ type: "designers", value: d }));
+          }
+          if (r.shared_families) {
+            r.shared_families.forEach(f => sharedFeatures.push({ type: "families", value: f }));
+          }
+          
+          // Check if this game is unique to this variant (for highlighting)
+          const isUnique = variant && differences && (
+            (variant === "A" && differences.onlyInA.some(g => g.game_id === r.game_id)) ||
+            (variant === "B" && differences.onlyInB.some(g => g.game_id === r.game_id))
+          );
+          
+          return (
+            <div 
+              className={`game-card ${isUnique ? "ab-test-unique" : ""}`}
+              key={r.game_id}
+              style={{ 
+                cursor: onGameClick ? "pointer" : "default",
+                border: isUnique ? "2px solid #1976d2" : undefined,
+                backgroundColor: isUnique ? "rgba(25, 118, 210, 0.05)" : undefined
+              }}
+            >
+              <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start" }}>
+                {r.thumbnail && (
+                  <img 
+                    src={r.thumbnail} 
+                    alt={r.name || "Game"}
+                    style={{ width: "80px", height: "80px", objectFit: "cover", borderRadius: "4px" }}
+                    onClick={() => onGameClick && onGameClick(r)}
+                  />
+                )}
+                <div style={{ flex: 1 }}>
+                  <div 
+                    className="game-card__title"
+                    onClick={() => onGameClick && onGameClick(r)}
+                    style={{ cursor: onGameClick ? "pointer" : "default" }}
+                  >
+                    {r.name || `Game ${r.game_id}`}
+                  </div>
+                  <div className="game-card__meta">
+                    {r.designers && r.designers.length > 0 && (
+                      <span style={{ marginRight: "1rem", fontSize: "0.9em", opacity: 0.8 }}>
+                        👤 {r.designers.join(", ")}
                       </span>
                     )}
-                  </span>
-                )}
-              </div>
-              {r.language_dependence && r.language_dependence.level >= 4 && r.language_dependence.level !== 81 && r.language_dependence.level !== 51 && (
-                <div style={{ 
-                  marginTop: "0.5rem", 
-                  padding: "0.5rem", 
-                  backgroundColor: "#fff3cd", 
-                  border: "1px solid #ffc107",
-                  borderRadius: "4px",
-                  fontSize: "0.9em",
-                  color: "#856404"
-                }}>
-                  ⚠️ High language dependence (Level {r.language_dependence.level}): {r.language_dependence.value || "Extensive use of text"}
+                    {r.year_published && (
+                      <span style={{ marginRight: "1rem", fontSize: "0.9em", opacity: 0.8 }}>
+                        📅 {r.year_published}
+                      </span>
+                    )}
+                    <span>
+                      Similarity:{" "}
+                      {r.final_score !== undefined && r.final_score !== null
+                        ? r.final_score.toFixed(2)
+                        : (r.embedding_similarity !== undefined && r.embedding_similarity !== null
+                            ? r.embedding_similarity.toFixed(2)
+                            : "N/A")}
+                    </span>
+                    {r.average_rating && (
+                      <span style={{ marginLeft: "1rem" }}>
+                        ⭐ {typeof r.average_rating === 'number' ? r.average_rating.toFixed(1) : r.average_rating}
+                        {r.num_ratings && (
+                          <span style={{ marginLeft: "0.5rem", opacity: 0.7, fontSize: "0.9em" }}>
+                            ({typeof r.num_ratings === 'number' ? r.num_ratings.toLocaleString() : r.num_ratings})
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {r.description && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleToggleExpand(r.game_id);
+                      }}
+                      style={{
+                        marginTop: "0.5rem",
+                        padding: "0.25rem 0.5rem",
+                        fontSize: "0.85rem",
+                        border: "1px solid #ddd",
+                        borderRadius: "4px",
+                        background: "transparent",
+                        cursor: "pointer"
+                      }}
+                    >
+                      {isExpanded(r.game_id) ? "Show less" : "Show more"}
+                    </button>
+                  )}
+                  {isExpanded(r.game_id) && r.description && (
+                    <div style={{ marginTop: "0.5rem", padding: "0.5rem", backgroundColor: "var(--bg-secondary, #f5f5f5)", borderRadius: "4px", fontSize: "0.9rem", lineHeight: "1.5" }}>
+                      {r.description}
+                    </div>
+                  )}
+                  {sharedFeatures.length > 0 && (
+                    <div className="shared-features-chips" style={{ marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+                      {sharedFeatures.map((feature, idx) => (
+                        <div 
+                          key={`${feature.type}-${feature.value}-${idx}`}
+                          className="shared-feature-chip"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onRequireFeature) {
+                              onRequireFeature(messageIndex, feature.type, feature.value);
+                            }
+                          }}
+                          title={`Click to require ${feature.value} (exclude games without this feature)`}
+                        >
+                          <span>{feature.value}</span>
+                          <span className="shared-feature-chip-add">+</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {r.language_dependence && r.language_dependence.level >= 4 && r.language_dependence.level !== 81 && r.language_dependence.level !== 51 && (
+                    <div style={{ 
+                      marginTop: "0.5rem", 
+                      padding: "0.5rem", 
+                      backgroundColor: "#fff3cd", 
+                      border: "1px solid #ffc107",
+                      borderRadius: "4px",
+                      fontSize: "0.9em",
+                      color: "#856404"
+                    }}>
+                      ⚠️ High language dependence (Level {r.language_dependence.level}): {r.language_dependence.value || "Extensive use of text"}
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
-          </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+function ABTestResults({ abTest, onGameClick, onRequireFeature, messageIndex, onFeedbackResponse }) {
+  const [expandedGames, setExpandedGames] = useState({ a: new Set(), b: new Set() });
+  
+  const toggleExpand = (variant, gameId) => {
+    setExpandedGames((prev) => {
+      const newExpanded = { ...prev };
+      const key = variant === "A" ? "a" : "b";
+      const newSet = new Set(newExpanded[key]);
+      if (newSet.has(gameId)) {
+        newSet.delete(gameId);
+      } else {
+        newSet.add(gameId);
+      }
+      newExpanded[key] = newSet;
+      return newExpanded;
+    });
+  };
+  
+  // Find differences between A and B results
+  const getDifferences = () => {
+    const resultsA = abTest.response_a.results || [];
+    const resultsB = abTest.response_b.results || [];
+    const gameIdsA = new Set(resultsA.map(r => r.game_id));
+    const gameIdsB = new Set(resultsB.map(r => r.game_id));
+    
+    const onlyInA = resultsA.filter(r => !gameIdsB.has(r.game_id));
+    const onlyInB = resultsB.filter(r => !gameIdsA.has(r.game_id));
+    const inBoth = resultsA.filter(r => gameIdsB.has(r.game_id));
+    
+    return { onlyInA, onlyInB, inBoth };
+  };
+  
+  const differences = getDifferences();
+  
+  return (
+    <div className="ab-test-results">
+      <div className="ab-test-header">
+        <h4>{abTest.config_name}</h4>
+      </div>
+      <div className="ab-test-columns">
+        <div className="ab-test-column">
+          <div className="ab-test-label">{abTest.response_a.label}</div>
+          <GameResultList 
+            results={abTest.response_a.results} 
+            onGameClick={onGameClick}
+            onRequireFeature={onRequireFeature}
+            messageIndex={messageIndex}
+            variant="A"
+            differences={differences}
+            expandedGames={expandedGames.a}
+            toggleExpand={(gameId) => toggleExpand("A", gameId)}
+          />
         </div>
-      ))}
+        <div className="ab-test-column">
+          <div className="ab-test-label">{abTest.response_b.label}</div>
+          <GameResultList 
+            results={abTest.response_b.results} 
+            onGameClick={onGameClick}
+            onRequireFeature={onRequireFeature}
+            messageIndex={messageIndex}
+            variant="B"
+            differences={differences}
+            expandedGames={expandedGames.b}
+            toggleExpand={(gameId) => toggleExpand("B", gameId)}
+          />
+        </div>
+      </div>
+      {abTest.question_id && (
+        <div className="ab-test-question" style={{ marginTop: "1rem", padding: "1rem", borderTop: "1px solid #ddd" }}>
+          <FeedbackQuestionInline
+            question={{
+              id: abTest.question_id,
+              question_text: abTest.question_text,
+              question_type: abTest.question_type,
+              options: abTest.options
+            }}
+            messageIndex={messageIndex}
+            onSubmit={(response) => onFeedbackResponse(messageIndex, abTest.question_id, response)}
+          />
+        </div>
+      )}
     </div>
   );
 }

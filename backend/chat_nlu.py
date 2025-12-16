@@ -1,4 +1,4 @@
-﻿# backend/app/chat_nlu.py
+# backend/app/chat_nlu.py
 
 import json
 import os
@@ -228,6 +228,20 @@ def interpret_message(
     elif "my collection" in text_l or "in my collection" in text_l:
         query_spec["scope"] = "user_collection"
         logger.debug(f"Setting scope to user_collection from text")
+    
+    # Pass through excluded_feature_values from context
+    if context and context.get("excluded_feature_values"):
+        query_spec["excluded_feature_values"] = context["excluded_feature_values"]
+        logger.debug(f"Setting excluded_feature_values from context: {context['excluded_feature_values']}")
+    
+    # Pass through required_feature_values from context
+    if context and context.get("required_feature_values"):
+        query_spec["required_feature_values"] = context["required_feature_values"]
+        logger.debug(f"Setting required_feature_values from context: {context['required_feature_values']}")
+    
+    # Pass through use_rarity_weighting from context if set
+    if context and context.get("use_rarity_weighting") is not None:
+        query_spec["use_rarity_weighting"] = context["use_rarity_weighting"]
 
     cons: Dict[str, Any] = {}
 

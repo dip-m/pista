@@ -74,6 +74,7 @@ class ChatResponse(BaseModel):
     results: Optional[List[Dict[str, Any]]] = None
     query_spec: Optional[Dict[str, Any]] = None
     thread_id: Optional[int] = None
+    ab_responses: Optional[List[Dict[str, Any]]] = None
 
 
 class BggIdUpdateRequest(BaseModel):
@@ -292,6 +293,138 @@ def on_shutdown() -> None:
         ENGINE_CONN = None
 
 
+def search_by_features_only(
+    required_feature_values: Optional[Dict[str, Set[str]]] = None,
+    include_features: Optional[List[str]] = None,
+    exclude_features: Optional[List[str]] = None,
+    constraints: Optional[Dict[str, Any]] = None,
+    allowed_ids: Optional[Set[int]] = None,
+    top_k: int = 10
+) -> List[Dict[str, Any]]:
+    """Search games by features only, ordered by rating."""
+    try:
+        constraints = constraints or {}
+        required_feature_values = required_feature_values or {}
+        
+        # Build SQL query to find games with required features
+        # Start with base query
+        joins = []
+        conditions = []
+        params = []
+        
+        # Add joins and conditions for each required feature type
+        # For each feature type, we need to ensure the game has ALL required values
+        for feature_type, required_values in required_feature_values.items():
+            if not required_values:
+                continue
+            
+            # For each required value, we need a separate condition to ensure ALL are present
+            # Use a subquery or multiple EXISTS clauses
+            feature_conditions = []
+            for req_value in required_values:
+                if feature_type == "mechanics":
+                    feature_conditions.append("""EXISTS (
+                        SELECT 1 FROM game_mechanics gm2 
+                        JOIN mechanics m2 ON m2.id = gm2.mechanic_id 
+                        WHERE gm2.game_id = g.id AND LOWER(m2.name) = LOWER(?)
+                    )""")
+                    params.append(req_value)
+                elif feature_type == "categories":
+                    feature_conditions.append("""EXISTS (
+                        SELECT 1 FROM game_categories gc2 
+                        JOIN categories c2 ON c2.id = gc2.category_id 
+                        WHERE gc2.game_id = g.id AND LOWER(c2.name) = LOWER(?)
+                    )""")
+                    params.append(req_value)
+                elif feature_type == "designers":
+                    feature_conditions.append("""EXISTS (
+                        SELECT 1 FROM game_designers gd2 
+                        JOIN designers d2 ON d2.id = gd2.designer_id 
+                        WHERE gd2.game_id = g.id AND LOWER(d2.name) = LOWER(?)
+                    )""")
+                    params.append(req_value)
+                elif feature_type == "families":
+                    feature_conditions.append("""EXISTS (
+                        SELECT 1 FROM game_families gf2 
+                        JOIN families f2 ON f2.id = gf2.family_id 
+                        WHERE gf2.game_id = g.id AND LOWER(f2.name) = LOWER(?)
+                    )""")
+                    params.append(req_value)
+            
+            if feature_conditions:
+                conditions.append("(" + " AND ".join(feature_conditions) + ")")
+        
+        # Build final query
+        if not conditions:
+            # No required features - just return top rated games
+            sql = """SELECT DISTINCT g.id, g.name, g.year_published, g.thumbnail, 
+                            g.average_rating, g.num_ratings, g.min_players, g.max_players, g.description
+                     FROM games g"""
+            if allowed_ids and len(allowed_ids) > 0:
+                placeholders = ",".join(["?" for _ in allowed_ids])
+                sql += f" WHERE g.id IN ({placeholders})"
+                params.extend(list(allowed_ids))
+            sql += " ORDER BY g.num_ratings DESC NULLS LAST, g.average_rating DESC NULLS LAST LIMIT ?"
+            params.append(top_k)
+        else:
+            # Has required features
+            sql = f"""SELECT DISTINCT g.id, g.name, g.year_published, g.thumbnail, 
+                            g.average_rating, g.num_ratings, g.min_players, g.max_players, g.description
+                     FROM games g
+                     WHERE {' AND '.join(conditions)}"""
+            if allowed_ids and len(allowed_ids) > 0:
+                placeholders = ",".join(["?" for _ in allowed_ids])
+                sql += f" AND g.id IN ({placeholders})"
+                params.extend(list(allowed_ids))
+            sql += " ORDER BY g.num_ratings DESC NULLS LAST, g.average_rating DESC NULLS LAST LIMIT ?"
+            params.append(top_k)
+        
+        logger.debug(f"Feature-only search SQL: {sql[:200]}... with {len(params)} params")
+        try:
+            cur = ENGINE_CONN.execute(sql, params)
+        except sqlite3.Error as e:
+            logger.error(f"SQL error in feature-only search: {e}, SQL: {sql}, params: {params}")
+            return []
+        results = []
+        for row in cur.fetchall():
+            game_id = row[0]
+            # Get designers for this game
+            designers = []
+            try:
+                cur_d = ENGINE_CONN.execute(
+                    """SELECT d.name FROM designers d
+                       JOIN game_designers gd ON gd.designer_id = d.id
+                       WHERE gd.game_id = ? ORDER BY d.name""",
+                    (game_id,)
+                )
+                designers = [r[0] for r in cur_d.fetchall()]
+            except sqlite3.Error:
+                pass
+            
+            # Row structure: id, name, year_published, thumbnail, average_rating, num_ratings, min_players, max_players, description
+            results.append({
+                "game_id": game_id,
+                "name": row[1],
+                "year_published": row[2],
+                "thumbnail": row[3],
+                "average_rating": row[4],
+                "num_ratings": row[5],
+                "min_players": row[6],
+                "max_players": row[7],
+                "description": row[8] if len(row) > 8 and row[8] else None,
+                "designers": designers,
+                "embedding_similarity": 0.0,  # No similarity score for feature-only search
+                "final_score": float(row[4]) if row[4] else 0.0,  # Use rating as score
+                "reason_summary": "Found by matching required features"
+            })
+        
+        logger.info(f"Feature-only search returned {len(results)} results")
+        return results
+    except Exception as e:
+        logger.error(f"Error in feature-only search: {e}", exc_info=True)
+        return []
+
+
 def compare_two_games(engine: SimilarityEngine, game_a_id: Any, game_b_id: Any) -> Dict[str, Any]:
     """
     Very simple pairwise comparison using the same feature logic.
@@ -493,7 +626,7 @@ def import_bgg_collection(current_user: Dict[str, Any] = Depends(get_current_use
 
 @app.get("/games/search")
 def search_games(q: str, limit: int = 10):
-    """Search games by name with lookahead. Cached for performance."""
+    """Search games by name and features with lookahead. Cached for performance."""
     # Input validation and sanitization
     if not q:
         return []
@@ -515,51 +648,120 @@ def search_games(q: str, limit: int = 10):
         # "Escape Curse" should match "Escape: The Curse of the Temple"
         query_words = q.split()
         
-        # Build SQL with multiple LIKE conditions for each word
-        # This allows partial word matching across the game name
+        # Build SQL to search both game names AND features (mechanics, categories, designers, publishers)
+        # Search in: games.name, mechanics.name, categories.name, designers.name, publishers.name
         if len(query_words) == 1:
-            # Single word: simple LIKE match
-            sql = "SELECT id, name, year_published, thumbnail FROM games WHERE name LIKE ? ORDER BY name LIMIT ?"
-            params = (f"%{query_words[0]}%", limit)
+            # Single word: search in all fields
+            sql = """SELECT DISTINCT g.id, g.name, g.year_published, g.thumbnail, g.average_rating, g.num_ratings
+                     FROM games g
+                     LEFT JOIN game_mechanics gm ON gm.game_id = g.id
+                     LEFT JOIN mechanics m ON m.id = gm.mechanic_id
+                     LEFT JOIN game_categories gc ON gc.game_id = g.id
+                     LEFT JOIN categories c ON c.id = gc.category_id
+                     LEFT JOIN game_designers gd ON gd.game_id = g.id
+                     LEFT JOIN designers d ON d.id = gd.designer_id
+                     LEFT JOIN game_publishers gp ON gp.game_id = g.id
+                     LEFT JOIN publishers p ON p.id = gp.publisher_id
+                     WHERE LOWER(g.name) LIKE LOWER(?)
+                        OR LOWER(m.name) LIKE LOWER(?)
+                        OR LOWER(c.name) LIKE LOWER(?)
+                        OR LOWER(d.name) LIKE LOWER(?)
+                        OR LOWER(p.name) LIKE LOWER(?)
+                     ORDER BY g.num_ratings DESC NULLS LAST, g.average_rating DESC NULLS LAST, g.name
+                     LIMIT ?"""
+            params = (f"%{query_words[0]}%", f"%{query_words[0]}%", f"%{query_words[0]}%", f"%{query_words[0]}%", f"%{query_words[0]}%", limit)
         else:
-            # Multiple words: each word must appear somewhere in the name
-            # Use LOWER for case-insensitive matching
-            conditions = " AND ".join(["LOWER(name) LIKE LOWER(?)" for _ in query_words])
-            sql = f"SELECT id, name, year_published, thumbnail FROM games WHERE {conditions} ORDER BY name LIMIT ?"
-            params = tuple([f"%{word}%" for word in query_words] + [limit])
+            # Multiple words: each word must appear somewhere (in name OR any feature)
+            # Use a more complex query that checks if all words appear in any combination
+            word_conditions = []
+            for word in query_words:
+                word_conditions.append(f"""(LOWER(g.name) LIKE LOWER(?) 
+                    OR LOWER(m.name) LIKE LOWER(?) 
+                    OR LOWER(c.name) LIKE LOWER(?) 
+                    OR LOWER(d.name) LIKE LOWER(?)
+                    OR LOWER(p.name) LIKE LOWER(?))""")
+            
+            conditions = " AND ".join(word_conditions)
+            sql = f"""SELECT DISTINCT g.id, g.name, g.year_published, g.thumbnail, g.average_rating, g.num_ratings
+                     FROM games g
+                     LEFT JOIN game_mechanics gm ON gm.game_id = g.id
+                     LEFT JOIN mechanics m ON m.id = gm.mechanic_id
+                     LEFT JOIN game_categories gc ON gc.game_id = g.id
+                     LEFT JOIN categories c ON c.id = gc.category_id
+                     LEFT JOIN game_designers gd ON gd.game_id = g.id
+                     LEFT JOIN designers d ON d.id = gd.designer_id
+                     LEFT JOIN game_publishers gp ON gp.game_id = g.id
+                     LEFT JOIN publishers p ON p.id = gp.publisher_id
+                     WHERE {conditions}
+                     ORDER BY g.num_ratings DESC NULLS LAST, g.average_rating DESC NULLS LAST, g.name
+                     LIMIT ?"""
+            # Each word needs 5 parameters (name, mechanic, category, designer, publisher)
+            params = tuple([f"%{word}%" for word in query_words for _ in range(5)] + [limit])
         
         cur = ENGINE_CONN.execute(sql, params)
         results = []
+        seen_ids = set()
         for row in cur.fetchall():
-            results.append({
-                "id": row[0],
-                "name": row[1],
-                "year_published": row[2],
-                "thumbnail": row[3]
-            })
-        
-        # If we got fewer results than limit, try a more lenient search
-        # Match games where ANY word appears (OR instead of AND)
-        if len(results) < limit and len(query_words) > 1:
-            conditions = " OR ".join(["LOWER(name) LIKE LOWER(?)" for _ in query_words])
-            sql = f"SELECT id, name, year_published, thumbnail FROM games WHERE {conditions} ORDER BY name LIMIT ?"
-            params = tuple([f"%{word}%" for word in query_words] + [limit * 2])  # Get more for deduplication
-            cur = ENGINE_CONN.execute(sql, params)
-            additional_results = []
-            seen_ids = {r["id"] for r in results}
-            for row in cur.fetchall():
-                if row[0] not in seen_ids:
-                    additional_results.append({
-                        "id": row[0],
-                        "name": row[1],
-                        "year_published": row[2],
-                        "thumbnail": row[3]
-                    })
-                    seen_ids.add(row[0])
-                    if len(results) + len(additional_results) >= limit:
-                        break
-            results.extend(additional_results)
-            results = results[:limit]
+            if row[0] not in seen_ids:
+                game_id = row[0]
+                # Get features for this game to show in search results
+                features = []
+                try:
+                    # Get mechanics
+                    cur_m = ENGINE_CONN.execute(
+                        """SELECT m.name FROM mechanics m
+                           JOIN game_mechanics gm ON gm.mechanic_id = m.id
+                           WHERE gm.game_id = ? LIMIT 3""",
+                        (game_id,)
+                    )
+                    mechanics = [r[0] for r in cur_m.fetchall()] if cur_m else []
+                    features.extend([("⚙️", m) for m in mechanics])
+                    
+                    # Get categories
+                    cur_c = ENGINE_CONN.execute(
+                        """SELECT c.name FROM categories c
+                           JOIN game_categories gc ON gc.category_id = c.id
+                           WHERE gc.game_id = ? LIMIT 2""",
+                        (game_id,)
+                    )
+                    categories = [r[0] for r in cur_c.fetchall()] if cur_c else []
+                    features.extend([("🏷️", c) for c in categories])
+                    
+                    # Get designers
+                    cur_d = ENGINE_CONN.execute(
+                        """SELECT d.name FROM designers d
+                           JOIN game_designers gd ON gd.designer_id = d.id
+                           WHERE gd.game_id = ? LIMIT 2""",
+                        (game_id,)
+                    )
+                    designers = [r[0] for r in cur_d.fetchall()] if cur_d else []
+                    features.extend([("👤", d) for d in designers])
+                    
+                    # Get publishers
+                    cur_p = ENGINE_CONN.execute(
+                        """SELECT p.name FROM publishers p
+                           JOIN game_publishers gp ON gp.publisher_id = p.id
+                           WHERE gp.game_id = ? LIMIT 2""",
+                        (game_id,)
+                    )
+                    publishers = [r[0] for r in cur_p.fetchall()] if cur_p else []
+                    features.extend([("🏢", p) for p in publishers])
+                except sqlite3.Error as e:
+                    logger.error(f"Error fetching features for game {game_id}: {e}")
+                    pass
+                
+                results.append({
+                    "id": game_id,
+                    "name": row[1],
+                    "year_published": row[2],
+                    "thumbnail": row[3],
+                    "average_rating": row[4],
+                    "num_ratings": row[5],
+                    "features": features  # Add features for display
+                })
+                seen_ids.add(game_id)
+                if len(results) >= limit:
+                    break
         
         # Cache results
         set_cached(cache_key, results)
@@ -760,7 +962,38 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
     results: Optional[List[Dict[str, Any]]] = None
 
     if intent == "recommend_similar":
-        base_game_id = query_spec["base_game_id"]
+        base_game_id = query_spec.get("base_game_id")
+        include_features = query_spec.get("include_features")
+        required_feature_values = query_spec.get("required_feature_values")
+        
+        # Allow search without game_id if features are specified
+        if base_game_id is None:
+            # Check if we have features to search by
+            has_features = (include_features and len(include_features) > 0) or (required_feature_values and len(required_feature_values) > 0)
+            if not has_features:
+                logger.warning("base_game_id is None and no features specified")
+                reply_text = "I couldn't identify which game you're asking about. Please specify a game name or features."
+                results = []
+                return ChatResponse(
+                    reply_text=reply_text,
+                    results=results,
+                    query_spec=query_spec,
+                    thread_id=thread_id if current_user else None,
+                    ab_responses=None
+                )
+            else:
+                # Search by features only - we'll handle this differently
+                logger.info("Searching by features only (no base game)")
+                base_game_id = None  # Will trigger feature-only search
+        else:
+            try:
+                base_game_id = int(base_game_id)
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid base_game_id: {base_game_id}, error: {e}")
+                reply_text = f"I couldn't identify which game you're asking about. Please specify a game name."
+                results = []
+                base_game_id = None
+        
         constraints = query_spec.get("constraints") or {}
         original_scope = query_spec.get("scope", "global")  # Track original scope before it might change
         scope = original_scope
@@ -779,21 +1012,74 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
         include_features = query_spec.get("include_features")
         exclude_features = query_spec.get("exclude_features")
         
-        logger.debug(f"Search params: include_features={include_features}, exclude_features={exclude_features}, constraints={constraints}")
+        # Check for A/B test configs
+        ab_test_configs = {}
+        try:
+            cur = ENGINE_CONN.execute(
+                "SELECT config_key, config_value FROM ab_test_configs WHERE is_active = 1"
+            )
+            for row in cur.fetchall():
+                try:
+                    ab_test_configs[row[0]] = json.loads(row[1])
+                except:
+                    ab_test_configs[row[0]] = row[1]
+        except Exception as e:
+            logger.debug(f"Error loading A/B test configs: {e}")
+        
+        # Check if rarity weighting is enabled (via A/B test or direct config)
+        use_rarity_weighting = ab_test_configs.get("use_rarity_weighting", {}).get("enabled", False)
+        # Also check if there's a direct config request
+        use_rarity_weighting = query_spec.get("use_rarity_weighting", use_rarity_weighting)
+        
+        # Get excluded feature values from query_spec (set by user removing chips)
+        excluded_feature_values = query_spec.get("excluded_feature_values")
+        if excluded_feature_values:
+            # Convert to proper format: {"mechanics": {"Deck Building"}, "categories": {"Fantasy"}}
+            excluded_feature_values = {
+                k: set(v) if isinstance(v, list) else {v} if v else set()
+                for k, v in excluded_feature_values.items()
+            }
+        
+        # Get required feature values from query_spec (set by user clicking chips to require features)
+        required_feature_values = query_spec.get("required_feature_values")
+        if required_feature_values:
+            # Convert to proper format: {"mechanics": {"Deck Building"}, "categories": {"Fantasy"}}
+            required_feature_values = {
+                k: set(v) if isinstance(v, list) else {v} if v else set()
+                for k, v in required_feature_values.items()
+            }
+            logger.info(f"Required feature values: {required_feature_values}")
+        else:
+            required_feature_values = None
+        
+        logger.info(f"Search params: base_game_id={base_game_id}, include_features={include_features}, exclude_features={exclude_features}, constraints={constraints}, use_rarity_weighting={use_rarity_weighting}, excluded_feature_values={excluded_feature_values}, required_feature_values={required_feature_values}")
         
         try:
-            # When searching in collection, we need to find more candidates since filtering is strict
-            # The search_similar function already finds 2n matches and reorders, so this should work
-            results = ENGINE.search_similar(
-                game_id=base_game_id,
-                top_k=top_k,
-                include_self=False,
-                constraints=constraints,
-                allowed_ids=allowed_ids,
-                explain=True,
-                include_features=include_features,
-                exclude_features=exclude_features,
-            )
+            if base_game_id is None:
+                # Feature-only search - find games with required features, ordered by rating
+                results = search_by_features_only(
+                    required_feature_values=required_feature_values,
+                    include_features=include_features,
+                    exclude_features=exclude_features,
+                    constraints=constraints,
+                    allowed_ids=allowed_ids,
+                    top_k=top_k
+                )
+            else:
+                # Normal similarity search with base game
+                results = ENGINE.search_similar(
+                    game_id=base_game_id,
+                    top_k=top_k,
+                    include_self=False,
+                    constraints=constraints,
+                    allowed_ids=allowed_ids,
+                    explain=True,
+                    include_features=include_features,
+                    exclude_features=exclude_features,
+                    use_rarity_weighting=use_rarity_weighting,
+                    excluded_feature_values=excluded_feature_values,
+                    required_feature_values=required_feature_values,
+                )
             logger.debug(f"Found {len(results)} results for game_id={base_game_id}, scope={scope}")
             
             # If no results found, try with loosened constraints and features
@@ -813,6 +1099,9 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                             explain=True,
                             include_features=include_features,
                             exclude_features=exclude_features,
+                            use_rarity_weighting=use_rarity_weighting,
+                            excluded_feature_values=excluded_feature_values,
+                            required_feature_values=required_feature_values,  # Keep required features!
                         )
                         results = results[:top_k] if results else []
                         logger.debug(f"Found {len(results)} results in global scope")
@@ -832,6 +1121,8 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                             explain=True,
                             include_features=None,
                             exclude_features=None,
+                            use_rarity_weighting=use_rarity_weighting,
+                            excluded_feature_values=excluded_feature_values,
                         )
                         results = results[:top_k] if results else []
                         logger.debug(f"Found {len(results)} results without constraints/features")
@@ -840,7 +1131,7 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                 
                 # If still no results, try embedding-only (no explain mode)
                 if not results:
-                    logger.debug(f"Retrying with embedding-only (no explain, no constraints, no features)")
+                    logger.debug(f"Retrying with embedding-only (no explain, no constraints, no features, but keeping required features)")
                     try:
                         results = ENGINE.search_similar(
                             game_id=base_game_id,
@@ -851,6 +1142,7 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                             explain=False,  # Use embedding-only (no feature filtering)
                             include_features=None,
                             exclude_features=None,
+                            required_feature_values=required_feature_values,  # Keep required features!
                         )
                         logger.debug(f"Found {len(results)} results with embedding-only search")
                     except Exception as search_err:
@@ -919,6 +1211,85 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                 f"{cmp_result.get('reason_summary', 'Comparison completed')}"
             )
 
+    # Check for A/B testing (only for recommend_similar with results and base_game_id)
+    ab_responses = None
+    if intent == "recommend_similar" and results and base_game_id is not None:
+        # Check if any A/B test configs are active
+        ab_configs_to_test = []
+        for config_key, config_data in ab_test_configs.items():
+            if isinstance(config_data, dict) and config_data.get("enabled", False):
+                ab_configs_to_test.append((config_key, config_data))
+        
+        if ab_configs_to_test and base_game_id is not None:
+            # Generate A/B responses for each active config (only if we have a base game)
+            ab_responses = []
+            for config_key, config_data in ab_configs_to_test:
+                # Determine the config value for A and B based on the config_key
+                # Check if this config is related to rarity weighting (flexible matching)
+                if config_key == "use_rarity_weighting" or "rarity" in config_key.lower():
+                    # For rarity weighting, A = False, B = True
+                    use_rarity_a = False
+                    use_rarity_b = True
+                else:
+                    # For other configs, use the current value for both (not testing this config)
+                    use_rarity_a = use_rarity_weighting
+                    use_rarity_b = use_rarity_weighting
+                
+                logger.info(f"A/B test for {config_key}: A uses rarity_weighting={use_rarity_a}, B uses rarity_weighting={use_rarity_b}")
+                
+                # Generate response A (config = False)
+                results_a = ENGINE.search_similar(
+                    game_id=base_game_id,
+                    top_k=top_k,
+                    include_self=False,
+                    constraints=constraints,
+                    allowed_ids=allowed_ids,
+                    explain=True,
+                    include_features=include_features,
+                    exclude_features=exclude_features,
+                    use_rarity_weighting=use_rarity_a,
+                    excluded_feature_values=excluded_feature_values,
+                    required_feature_values=required_feature_values,
+                )
+                
+                # Generate response B (config = True)
+                results_b = ENGINE.search_similar(
+                    game_id=base_game_id,
+                    top_k=top_k,
+                    include_self=False,
+                    constraints=constraints,
+                    allowed_ids=allowed_ids,
+                    explain=True,
+                    include_features=include_features,
+                    exclude_features=exclude_features,
+                    use_rarity_weighting=use_rarity_b,
+                    excluded_feature_values=excluded_feature_values,
+                    required_feature_values=required_feature_values,
+                )
+                
+                logger.info(f"A/B test results: A has {len(results_a)} results, B has {len(results_b)} results")
+                
+                # Create A/B test question if it doesn't exist
+                ab_question = _get_or_create_ab_question(ENGINE_CONN, config_key, config_data)
+                
+                ab_responses.append({
+                    "config_key": config_key,
+                    "config_name": config_data.get("name", config_key),
+                    "response_a": {
+                        "results": results_a,
+                        "config_value": False,
+                        "label": config_data.get("label_a", "Option A")
+                    },
+                    "response_b": {
+                        "results": results_b,
+                        "config_value": True,
+                        "label": config_data.get("label_b", "Option B")
+                    },
+                    "question_id": ab_question["id"],
+                    "question_text": ab_question["question_text"],
+                    "options": ab_question["options"]
+                })
+
     # Save to chat history (only if authenticated)
     thread_id = req.thread_id
     if current_user:
@@ -962,7 +1333,8 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
         reply_text=reply_text,
         results=results,
         query_spec=query_spec,
-        thread_id=thread_id,
+        thread_id=thread_id if current_user else None,
+        ab_responses=ab_responses
     )
 
 
@@ -1615,6 +1987,60 @@ def update_feedback_question(
         raise HTTPException(status_code=500, detail=f"Failed to update question: {str(e)}")
 
 
+def _get_or_create_ab_question(conn: sqlite3.Connection, config_key: str, config_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Get or create a feedback question for an A/B test."""
+    question_text = config_data.get("question_text", f"Which response do you prefer for {config_key}?")
+    
+    # Check if question already exists
+    cur = conn.execute(
+        "SELECT id FROM feedback_questions WHERE question_text = ? LIMIT 1",
+        (question_text,)
+    )
+    row = cur.fetchone()
+    
+    if row:
+        question_id = row[0]
+    else:
+        # Create new question
+        cur = conn.execute(
+            """INSERT INTO feedback_questions (question_text, question_type, is_active)
+               VALUES (?, ?, ?)""",
+            (question_text, "single_select", 1)
+        )
+        question_id = cur.lastrowid
+        
+        # Create options
+        label_a = config_data.get("label_a", "Option A")
+        label_b = config_data.get("label_b", "Option B")
+        
+        conn.execute(
+            """INSERT INTO feedback_question_options (question_id, option_text, display_order)
+               VALUES (?, ?, ?)""",
+            (question_id, label_a, 0)
+        )
+        conn.execute(
+            """INSERT INTO feedback_question_options (question_id, option_text, display_order)
+               VALUES (?, ?, ?)""",
+            (question_id, label_b, 1)
+        )
+        conn.commit()
+    
+    # Get options
+    cur = conn.execute(
+        """SELECT id, option_text FROM feedback_question_options 
+           WHERE question_id = ? ORDER BY display_order""",
+        (question_id,)
+    )
+    options = [{"id": opt[0], "text": opt[1]} for opt in cur.fetchall()]
+    
+    return {
+        "id": question_id,
+        "question_text": question_text,
+        "question_type": "single_select",
+        "options": options
+    }
+
+
 @app.delete("/admin/feedback/questions/{question_id}")
 def delete_feedback_question(
     question_id: int,
@@ -1634,4 +2060,148 @@ def delete_feedback_question(
     except Exception as e:
         logger.error(f"Error deleting feedback question: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to delete question: {str(e)}")
+
+
+# Admin endpoints for A/B test configs
+@app.get("/admin/ab-test-configs")
+def get_ab_test_configs(
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Get all A/B test configurations."""
+    try:
+        cur = ENGINE_CONN.execute(
+            "SELECT id, config_key, config_value, is_active, created_at, updated_at FROM ab_test_configs ORDER BY created_at DESC"
+        )
+        configs = []
+        for row in cur.fetchall():
+            try:
+                config_value = json.loads(row[2])
+            except:
+                config_value = row[2]
+            configs.append({
+                "id": row[0],
+                "config_key": row[1],
+                "config_value": config_value,
+                "is_active": bool(row[3]),
+                "created_at": row[4],
+                "updated_at": row[5],
+            })
+        return {"configs": configs}
+    except Exception as e:
+        logger.error(f"Error getting A/B test configs: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get A/B test configs: {str(e)}")
+
+
+@app.post("/admin/ab-test-configs")
+def create_ab_test_config(
+    config_key: str,
+    config_value: str,  # JSON string
+    is_active: bool = False,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Create or update an A/B test configuration."""
+    try:
+        # Verify config_value is valid JSON
+        try:
+            json.loads(config_value)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="config_value must be valid JSON")
+        
+        # Check if config exists
+        cur = ENGINE_CONN.execute(
+            "SELECT id FROM ab_test_configs WHERE config_key = ?",
+            (config_key,)
+        )
+        existing = cur.fetchone()
+        
+        if existing:
+            # Update existing
+            ENGINE_CONN.execute(
+                """UPDATE ab_test_configs 
+                   SET config_value = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE config_key = ?""",
+                (config_value, 1 if is_active else 0, config_key)
+            )
+        else:
+            # Create new
+            ENGINE_CONN.execute(
+                """INSERT INTO ab_test_configs (config_key, config_value, is_active)
+                   VALUES (?, ?, ?)""",
+                (config_key, config_value, 1 if is_active else 0)
+            )
+        
+        ENGINE_CONN.commit()
+        return {"success": True, "message": "A/B test config saved"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving A/B test config: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save A/B test config: {str(e)}")
+
+
+@app.put("/admin/ab-test-configs/{config_key}")
+def update_ab_test_config(
+    config_key: str,
+    is_active: Optional[bool] = None,
+    config_value: Optional[str] = None,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Update an A/B test configuration."""
+    try:
+        updates = []
+        params = []
+        
+        if is_active is not None:
+            updates.append("is_active = ?")
+            params.append(1 if is_active else 0)
+        
+        if config_value is not None:
+            try:
+                json.loads(config_value)
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=400, detail="config_value must be valid JSON")
+            updates.append("config_value = ?")
+            params.append(config_value)
+        
+        if not updates:
+            raise HTTPException(status_code=400, detail="No updates provided")
+        
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(config_key)
+        
+        ENGINE_CONN.execute(
+            f"UPDATE ab_test_configs SET {', '.join(updates)} WHERE config_key = ?",
+            params
+        )
+        ENGINE_CONN.commit()
+        return {"success": True, "message": "A/B test config updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating A/B test config: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update A/B test config: {str(e)}")
+
+
+@app.delete("/admin/ab-test-configs/{config_key}")
+def delete_ab_test_config(
+    config_key: str,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Delete an A/B test configuration."""
+    try:
+        cur = ENGINE_CONN.execute(
+            "SELECT id FROM ab_test_configs WHERE config_key = ?",
+            (config_key,)
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Config not found")
+        
+        ENGINE_CONN.execute("DELETE FROM ab_test_configs WHERE config_key = ?", (config_key,))
+        ENGINE_CONN.commit()
+        return {"success": True, "message": "A/B test config deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting A/B test config: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete A/B test config: {str(e)}")
 

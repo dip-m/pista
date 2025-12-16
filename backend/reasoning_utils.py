@@ -1,40 +1,80 @@
 import sqlite3
-from typing import Dict, Set, List, Tuple
+import math
+import logging
+from typing import Dict, Set, List, Tuple, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _fetch_name(conn: sqlite3.Connection, game_id: int) -> str:
-    cur = conn.execute("SELECT name FROM games WHERE id = ?", (game_id,))
-    row = cur.fetchone()
-    return row[0] if row else ""
+    if game_id is None:
+        raise ValueError("game_id cannot be None")
+    try:
+        game_id = int(game_id)
+    except (ValueError, TypeError):
+        raise ValueError(f"game_id must be an integer, got {type(game_id)}: {game_id}")
+    
+    try:
+        cur = conn.execute("SELECT name FROM games WHERE id = ?", (game_id,))
+        row = cur.fetchone()
+        return row[0] if row else f"(id={game_id})"
+    except sqlite3.Error as e:
+        logger.error(f"SQL error fetching name for game_id={game_id}: {e}")
+        return f"(id={game_id})"
 
 
 def _fetch_feature_names(
     conn: sqlite3.Connection,
+    game_id: int,
     join_table: str,
     vocab_table: str,
     join_col_game: str,
     join_col_vocab: str,
 ) -> Set[str]:
-    sql = f"""SELECT v.name
-               FROM {vocab_table} v
-               JOIN {join_table} j ON j.{join_col_vocab} = v.id
-               WHERE j.{join_col_game} = ?
-               ORDER BY v.name"""
-    cur = conn.execute(sql, (game_id,))
-    return {row[0] for row in cur.fetchall()}
-
-
-def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, object]:
-    name = _fetch_name(conn, game_id)
-
-    def fetch(join_table, vocab_table, join_vocab_col):
+    if game_id is None:
+        raise ValueError("game_id cannot be None")
+    try:
+        game_id = int(game_id)
+    except (ValueError, TypeError):
+        raise ValueError(f"game_id must be an integer, got {type(game_id)}: {game_id}")
+    
+    try:
         sql = f"""SELECT v.name
                    FROM {vocab_table} v
-                   JOIN {join_table} j ON j.{join_vocab_col} = v.id
-                   WHERE j.game_id = ?
+                   JOIN {join_table} j ON j.{join_col_vocab} = v.id
+                   WHERE j.{join_col_game} = ?
                    ORDER BY v.name"""
         cur = conn.execute(sql, (game_id,))
         return {row[0] for row in cur.fetchall()}
+    except sqlite3.Error as e:
+        logger.error(f"SQL error in _fetch_feature_names for game_id={game_id}, table={vocab_table}: {e}")
+        return set()
+
+
+def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, object]:
+    # Validate game_id
+    if game_id is None:
+        raise ValueError("game_id cannot be None")
+    try:
+        game_id = int(game_id)
+    except (ValueError, TypeError):
+        raise ValueError(f"game_id must be an integer, got {type(game_id)}: {game_id}")
+    
+    name = _fetch_name(conn, game_id)
+
+    def fetch(join_table, vocab_table, join_vocab_col):
+        try:
+            sql = f"""SELECT v.name
+                       FROM {vocab_table} v
+                       JOIN {join_table} j ON j.{join_vocab_col} = v.id
+                       WHERE j.game_id = ?
+                       ORDER BY v.name"""
+            cur = conn.execute(sql, (game_id,))
+            # Filter out None values and empty strings
+            return {row[0] for row in cur.fetchall() if row[0] is not None and row[0].strip()}
+        except sqlite3.Error as e:
+            logger.error(f"SQL error fetching {vocab_table} for game_id={game_id}: {e}")
+            return set()  # Return empty set on error
 
     mechanics = fetch("game_mechanics", "mechanics", "mechanic_id")
     categories = fetch("game_categories", "categories", "category_id")
@@ -148,7 +188,53 @@ def jaccard(a: Set[str], b: Set[str]) -> float:
     return len(inter) / len(union) if union else 0.0
 
 
-def compute_meta_similarity(f1: Dict[str, object], f2: Dict[str, object]) -> Tuple[float, Dict[str, List[str]], Dict[str, float]]:
+def get_feature_rarity_weights(conn: sqlite3.Connection, feature_type: str) -> Dict[str, float]:
+    """Calculate rarity weights for features. Rarer features get higher weights."""
+    # Map feature types to their tables
+    table_map = {
+        "mechanics": ("game_mechanics", "mechanic_id", "mechanics"),
+        "categories": ("game_categories", "category_id", "categories"),
+        "families": ("game_families", "family_id", "families"),
+        "designers": ("game_designers", "designer_id", "designers"),
+        "artists": ("game_artists", "artist_id", "artists"),
+        "publishers": ("game_publishers", "publisher_id", "publishers"),
+    }
+    
+    if feature_type not in table_map:
+        return {}
+    
+    join_table, join_col, vocab_table = table_map[feature_type]
+    
+    # Get total number of games
+    cur = conn.execute("SELECT COUNT(DISTINCT id) FROM games")
+    total_games = cur.fetchone()[0] or 1
+    
+    # Get frequency of each feature
+    cur = conn.execute(
+        f"""SELECT v.name, COUNT(DISTINCT j.game_id) as count
+           FROM {vocab_table} v
+           JOIN {join_table} j ON j.{join_col} = v.id
+           GROUP BY v.id, v.name"""
+    )
+    
+    weights = {}
+    for row in cur.fetchall():
+        feature_name = row[0]
+        count = row[1]
+        # Rarity = inverse frequency (less common = higher weight)
+        # Normalize: weight = 1 / (frequency / total_games)
+        # Add smoothing to avoid division by zero
+        frequency = count / total_games
+        weight = 1.0 / (frequency + 0.001)  # Add small smoothing factor
+        # Normalize weights to reasonable range (0.5 to 3.0) - wider range for more impact
+        # Use log scale to make differences more pronounced
+        normalized_weight = math.log(weight + 1) / math.log(1000)  # Normalize to 0-1 range
+        weights[feature_name] = 0.5 + normalized_weight * 2.5  # Scale to 0.5-3.0 range
+    
+    return weights
+
+
+def compute_meta_similarity(f1: Dict[str, object], f2: Dict[str, object], conn: Optional[sqlite3.Connection] = None, use_rarity_weighting: bool = False) -> Tuple[float, Dict[str, List[str]], Dict[str, float]]:
     mech1, mech2 = f1["mechanics"], f2["mechanics"]
     cat1, cat2 = f1["categories"], f2["categories"]
     fam1, fam2 = f1["families"], f2["families"]
@@ -183,13 +269,55 @@ def compute_meta_similarity(f1: Dict[str, object], f2: Dict[str, object]) -> Tup
         "j_publishers": jaccard(pub1, pub2),
     }
 
+    # Base weights
+    weights = {
+        "mechanics": 0.35,
+        "categories": 0.25,
+        "families": 0.15,
+        "designers": 0.10,
+        "artists": 0.05,
+        "publishers": 0.10,
+    }
+    
+    # Apply rarity weighting if enabled
+    if use_rarity_weighting and conn:
+        # Get rarity weights for shared features
+        rarity_weights = {}
+        for feature_type in ["mechanics", "categories", "families", "designers", "artists", "publishers"]:
+            feature_rarity = get_feature_rarity_weights(conn, feature_type)
+            rarity_weights[feature_type] = feature_rarity
+        
+        # Adjust scores based on rarity of shared features
+        for feature_type, base_weight in weights.items():
+            shared_key = f"shared_{feature_type}"
+            shared_features = overlaps.get(shared_key, [])
+            if shared_features and feature_type in rarity_weights:
+                # Calculate average rarity of shared features
+                avg_rarity = 1.0
+                if shared_features:
+                    rarities = [rarity_weights[feature_type].get(f, 1.0) for f in shared_features]
+                    avg_rarity = sum(rarities) / len(rarities) if rarities else 1.0
+                # Boost weight for rare features - use stronger multiplier
+                # Rarity weights are typically 0.5-3.0, so we multiply by avg_rarity with stronger effect
+                # Use a more aggressive multiplier to make rare features more impactful
+                # If avg_rarity > 1.0 (rare), boost significantly; if < 1.0 (common), reduce weight
+                rarity_multiplier = 1.0 + (avg_rarity - 1.0) * 3.0  # Much stronger effect (3x multiplier)
+                weights[feature_type] = base_weight * rarity_multiplier
+                logger.info(f"Rarity weighting for {feature_type}: base={base_weight:.3f}, avg_rarity={avg_rarity:.3f}, multiplier={rarity_multiplier:.3f}, final={weights[feature_type]:.3f}, shared_features={shared_features[:3]}")
+        
+        # Renormalize weights to sum to 1.0
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            weights_before_norm = weights.copy()
+            weights = {k: v / total_weight for k, v in weights.items()}
+
     meta_score = (
-        0.35 * scores["j_mechanics"]
-        + 0.25 * scores["j_categories"]
-        + 0.15 * scores["j_families"]
-        + 0.10 * scores["j_designers"]
-        + 0.05 * scores["j_artists"]
-        + 0.10 * scores["j_publishers"]
+        weights["mechanics"] * scores["j_mechanics"]
+        + weights["categories"] * scores["j_categories"]
+        + weights["families"] * scores["j_families"]
+        + weights["designers"] * scores["j_designers"]
+        + weights["artists"] * scores["j_artists"]
+        + weights["publishers"] * scores["j_publishers"]
     )
 
     return meta_score, overlaps, scores
