@@ -368,10 +368,20 @@ body {
   border-radius: 4px;
   cursor: pointer;
   font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
 }
 
-.chat-input-row button:hover {
+.chat-input-row button:hover:not(:disabled) {
   background: #1565c0;
+}
+
+.chat-input-row button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .game-results {
@@ -1103,6 +1113,20 @@ body {
 }
 
 /* Game search in chat */
+/* Processing Indicator */
+.processing-indicator {
+  position: absolute;
+  top: -2.5rem;
+  left: 0;
+  right: 0;
+  padding: 0.5rem;
+  background-color: rgba(25, 118, 210, 0.1);
+  border-radius: 4px;
+  font-size: 0.9rem;
+  color: #1976d2;
+  z-index: 1001;
+}
+
 .chat-input-container {
   display: flex;
   flex-direction: column;
@@ -1939,28 +1963,22 @@ body {
 }
 
 /* Admin Games Page */
-.admin-games-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 2000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.admin-games-page {
+  min-height: calc(100vh - 60px);
+  padding: 2rem;
+  background: #f5f5f5;
 }
 
 .admin-games {
   background: white;
   border-radius: 8px;
-  width: 90%;
+  width: 100%;
   max-width: 1200px;
-  max-height: 90vh;
+  margin: 0 auto;
+  min-height: calc(100vh - 120px);
   display: flex;
   flex-direction: column;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .admin-games-header {

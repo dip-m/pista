@@ -143,7 +143,7 @@ function App() {
             path="/admin"
             element={
               user && user.is_admin ? (
-                <AdminGames user={user} onClose={() => window.history.back()} />
+                <AdminGames user={user} />
               ) : (
                 <Navigate to="/" replace />
               )

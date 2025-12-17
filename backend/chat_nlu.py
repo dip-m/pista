@@ -203,12 +203,28 @@ def interpret_message(
     base_game_id: Optional[Any] = None
 
     # Priority: selected_game_id > candidates > last_game_id > fallback
+    # But don't use fallback if we have features in context (allow feature-only search)
+    has_features_in_context = (
+        (ctx.get("required_feature_values") and len(ctx.get("required_feature_values", {})) > 0) or
+        (ctx.get("player_chips") and len(ctx.get("player_chips", [])) > 0) or
+        (ctx.get("playtime_chips") and len(ctx.get("playtime_chips", [])) > 0)
+    )
+    
     if selected_game_id:
         base_game_id = selected_game_id
-    elif candidates:
+    elif candidates and not has_features_in_context:
+        # Only use candidates if we don't have features in context
+        # If features are present, prefer feature-only search over game candidates
         base_game_id = candidates[0]["game_id"]
+    elif last_game_id and not has_features_in_context:
+        # Only use last_game_id if we don't have features in context
+        # If features are present, prefer feature-only search
+        base_game_id = last_game_id
+    elif not has_features_in_context:
+        # Only use fallback if no features in context (allow feature-only search when features are present)
+        base_game_id = 224517  # fallback: Brass: Birmingham
     else:
-        base_game_id = last_game_id or 224517  # fallback: Brass: Birmingham
+        base_game_id = None  # Allow feature-only search
 
     # If at least two games & language suggests comparison → compare_pair
     if len(candidates) >= 2 and ("compare" in text_l or "do i need" in text_l):
@@ -217,7 +233,7 @@ def interpret_message(
         query_spec["game_b_id"] = candidates[1]["game_id"]
         return query_spec
 
-    # Set base_game_id in query_spec
+    # Set base_game_id in query_spec (may be None for feature-only search)
     query_spec["base_game_id"] = base_game_id
 
     # scope - check context first, then text

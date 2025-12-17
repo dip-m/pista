@@ -1,10 +1,16 @@
 // frontend/src/components/features/AdminGames.jsx
 import React, { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
 import GameFeaturesEditor from "./GameFeaturesEditor";
 
-function AdminGames({ user, onClose }) {
+function AdminGames({ user }) {
+  const navigate = useNavigate();
+  
+  const handleClose = () => {
+    navigate("/");
+  };
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -33,14 +39,14 @@ function AdminGames({ user, onClose }) {
         setTotalPages(data.total_pages);
       } else if (res.status === 403) {
         alert("Admin access required");
-        onClose();
+        handleClose();
       }
     } catch (err) {
       console.error("Failed to load games:", err);
     } finally {
       setLoading(false);
     }
-  }, [page, searchQuery, onClose]);
+  }, [page, searchQuery]);
 
   useEffect(() => {
     loadGames();
@@ -52,11 +58,11 @@ function AdminGames({ user, onClose }) {
   };
 
   return (
-    <div className="admin-games-overlay" onClick={onClose}>
-      <div className="admin-games" onClick={(e) => e.stopPropagation()}>
+    <div className="admin-games-page">
+      <div className="admin-games">
         <div className="admin-games-header">
           <h2>Admin: All Games</h2>
-          <button className="close-button" onClick={onClose}>×</button>
+          <button className="close-button" onClick={handleClose}>×</button>
         </div>
         
         <div className="admin-games-search">

@@ -45,6 +45,7 @@ function PistaChat({ user }) {
   const [showHistory, setShowHistory] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [gameSearchResults, setGameSearchResults] = useState([]);
+  const [featureSearchResults, setFeatureSearchResults] = useState([]);
   const [showGameSearch, setShowGameSearch] = useState(false);
   const [atMentionActive, setAtMentionActive] = useState(false);
   const [atMentionPosition, setAtMentionPosition] = useState(0);
@@ -52,6 +53,9 @@ function PistaChat({ user }) {
   const [marketplaceGame, setMarketplaceGame] = useState(null);
   const [featuresEditorGame, setFeaturesEditorGame] = useState(null);
   const [helpfulQuestion, setHelpfulQuestion] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [showProcessingIndicator, setShowProcessingIndicator] = useState(false);
+  const [processingTimeout, setProcessingTimeout] = useState(null);
   // eslint-disable-next-line no-unused-vars
   const [requiredFeatures, setRequiredFeatures] = useState({}); // {messageIndex: {mechanics: Set, categories: Set, ...}}
   const [activeRequiredFeatures, setActiveRequiredFeatures] = useState([]); // [{type, value, key, messageIndex}, ...] for display in chips
@@ -103,6 +107,7 @@ function PistaChat({ user }) {
     const trimmedQuery = query.trim();
     if (trimmedQuery.length < 2) {
       setGameSearchResults([]);
+      setFeatureSearchResults([]);
       setShowGameSearch(false);
       return;
     }
@@ -111,11 +116,18 @@ function PistaChat({ user }) {
       const res = await fetch(`${API_BASE}/games/search?q=${encodeURIComponent(trimmedQuery)}&limit=20`);
       if (res.ok) {
         const data = await res.json();
-        setGameSearchResults(data);
+        // Handle both old format (array) and new format (object with games/features)
+        if (Array.isArray(data)) {
+          setGameSearchResults(data);
+          setFeatureSearchResults([]);
+        } else {
+          setGameSearchResults(data.games || []);
+          setFeatureSearchResults(data.features || []);
+        }
         setShowGameSearch(true);
       }
     } catch (err) {
-      console.error("Game search failed:", err);
+      console.error("Search failed:", err);
     }
   };
 
@@ -153,17 +165,20 @@ function PistaChat({ user }) {
           } else {
             setShowGameSearch(false);
             setGameSearchResults([]);
+            setFeatureSearchResults([]);
           }
-        } else {
-          setAtMentionActive(false);
-          setShowGameSearch(false);
-          setGameSearchResults([]);
-          setAtMentionQuery("");
-        }
+          } else {
+            setAtMentionActive(false);
+            setShowGameSearch(false);
+            setGameSearchResults([]);
+            setFeatureSearchResults([]);
+            setAtMentionQuery("");
+          }
       } else {
         setAtMentionActive(false);
         setShowGameSearch(false);
         setGameSearchResults([]);
+        setFeatureSearchResults([]);
         setAtMentionQuery("");
       }
   };
@@ -176,47 +191,32 @@ function PistaChat({ user }) {
     const textAfterAt = currentInput.substring(atMentionPosition + 1);
     
     // Find where the search query ends
-    // The query is what we searched for (stored in atMentionQuery) or extract from input
     let queryText = atMentionQuery || "";
     
     if (!queryText) {
-      // Extract query from @ to cursor position
       const cursorPos = cursorPosition;
       queryText = currentInput.substring(atMentionPosition + 1, cursorPos).trim();
     }
     
-    // Find where this query ends in the input
-    // Match the query text exactly (it can include spaces)
     let queryEndPos = atMentionPosition + 1;
     
     if (queryText) {
-      // Check if the query text appears right after @
       if (textAfterAt.startsWith(queryText)) {
         queryEndPos = atMentionPosition + 1 + queryText.length;
       } else {
-        // Query might have been modified, find it by pattern matching
-        // Match everything from @ until we hit a space that's clearly after the search
-        // This handles cases where user continued typing
         const match = textAfterAt.match(/^([^\s\n]+(?:\s+[^\s\n]+)*)/);
         if (match) {
           queryEndPos = atMentionPosition + 1 + match[0].length;
         } else {
-          // Fallback: use cursor position
           queryEndPos = cursorPosition;
         }
       }
     } else {
-      // No query, find first space or use cursor
       const spaceIndex = textAfterAt.indexOf(' ');
       queryEndPos = spaceIndex !== -1 ? atMentionPosition + 1 + spaceIndex : cursorPosition;
     }
     
-    // Get any text after the query that should be preserved
     const textAfterQuery = currentInput.substring(queryEndPos).trimStart();
-    
-    // Replace @ + entire query with game name
-    const newText = textBeforeAt + game.name + (textAfterQuery ? " " + textAfterQuery : "");
-    setInput(newText);
     
     // Add game to chips if not already present
     if (!gameChips.find(g => g.id === game.id)) {
@@ -227,7 +227,12 @@ function PistaChat({ user }) {
     setAtMentionActive(false);
     setShowGameSearch(false);
     setGameSearchResults([]);
+    setFeatureSearchResults([]);
     setAtMentionQuery("");
+    
+    // Replace @ mention with game name in input textbox (don't auto-send)
+    const newText = textBeforeAt + game.name + (textAfterQuery ? " " + textAfterQuery : "");
+    setInput(newText);
     
     // Set cursor position after inserted game name
     setTimeout(() => {
@@ -266,20 +271,114 @@ function PistaChat({ user }) {
         setGameChips([...gameChips, game]);
       }
       setGameSearchResults([]);
+      setFeatureSearchResults([]);
       setShowGameSearch(false);
       // Insert game name at cursor position
       insertTextAtCursor(game.name + " ");
     }
   };
 
-  const removeGameChip = (gameId) => {
-    setGameChips(gameChips.filter(g => g.id !== gameId));
-    // Remove game name from input if present
-    const game = gameChips.find(g => g.id === gameId);
-    if (game) {
-      const regex = new RegExp(`\\b${game.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-      setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
+  const selectFeature = (feature) => {
+    // Replace @ mention with feature name in input
+    if (atMentionActive && inputRef) {
+      const currentInput = input;
+      const textBeforeAt = currentInput.substring(0, atMentionPosition);
+      const textAfterAt = currentInput.substring(atMentionPosition + 1);
+      
+      let queryText = atMentionQuery || "";
+      if (!queryText) {
+        const cursorPos = cursorPosition;
+        queryText = currentInput.substring(atMentionPosition + 1, cursorPos).trim();
+      }
+      
+      let queryEndPos = atMentionPosition + 1;
+      if (queryText && textAfterAt.startsWith(queryText)) {
+        queryEndPos = atMentionPosition + 1 + queryText.length;
+      } else {
+        const match = textAfterAt.match(/^([^\s\n]+(?:\s+[^\s\n]+)*)/);
+        if (match) {
+          queryEndPos = atMentionPosition + 1 + match[0].length;
+        } else {
+          queryEndPos = cursorPosition;
+        }
+      }
+      
+      const textAfterQuery = currentInput.substring(queryEndPos).trimStart();
+      const newText = textBeforeAt + feature.name + (textAfterQuery ? " " + textAfterQuery : "");
+      setInput(newText);
+      
+      // Add feature as required feature chip
+      // Use the last message index or 0 if no messages
+      // Don't auto-requery when selecting from @ dropdown - let user send manually
+      const messageIndex = messages.length > 0 ? messages.length - 1 : 0;
+      handleRequireFeature(messageIndex, feature.type, feature.name, false);
+      
+      setAtMentionActive(false);
+      setShowGameSearch(false);
+      setGameSearchResults([]);
+      setFeatureSearchResults([]);
+      setAtMentionQuery("");
+      
+      setTimeout(() => {
+        if (inputRef) {
+          const newPos = textBeforeAt.length + feature.name.length + (textAfterQuery ? 1 : 0);
+          inputRef.setSelectionRange(newPos, newPos);
+          setCursorPosition(newPos);
+          inputRef.focus();
+        }
+      }, 0);
+    } else {
+      // Not in @ mention mode, just add to input
+      insertTextAtCursor(feature.name + " ");
+      
+      // Add feature as required feature chip
+      // Don't auto-requery when selecting from @ dropdown - let user send manually
+      const messageIndex = messages.length > 0 ? messages.length - 1 : 0;
+      handleRequireFeature(messageIndex, feature.type, feature.name, false);
+      
+      setShowGameSearch(false);
+      setGameSearchResults([]);
+      setFeatureSearchResults([]);
     }
+  };
+
+  const removeGameChip = (gameId) => {
+    const game = gameChips.find(g => g.id === gameId);
+    if (!game) return;
+    
+    // Remove game chip
+    const newGameChips = gameChips.filter(g => g.id !== gameId);
+    setGameChips(newGameChips);
+    
+    // Remove game name from input textbox
+    // Handle both comma-separated and space-separated formats
+    const gameNameEscaped = game.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Remove the game name, handling commas and spaces around it
+    let newInput = input
+      .replace(new RegExp(`\\s*${gameNameEscaped}\\s*,?\\s*`, 'gi'), ' ') // Remove with comma
+      .replace(new RegExp(`\\s*,\\s*${gameNameEscaped}\\s*`, 'gi'), ' ') // Remove with leading comma
+      .replace(new RegExp(`\\b${gameNameEscaped}\\b`, 'gi'), '') // Remove standalone
+      .replace(/\s+/g, ' ')
+      .replace(/^,\s*|,\s*$/g, '') // Remove leading/trailing commas
+      .trim();
+    
+    // Also remove any "similar to" or "different from" text that would trigger recommend_similar/different
+    newInput = newInput
+      .replace(/\b(games?\s+)?(similar\s+to|different\s+from)\s+/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    setInput(newInput);
+    
+    // Reset context - when game chip is removed, context should reset to global_search for games matching features
+    // Clear any recommend_similar/different context by clearing chips that imply that
+    setPromptChips([]);
+    
+    // Clear any game-related context from previous queries
+    // This ensures that when a feature search is done after removing a game chip,
+    // the backend won't use the old game context
+    // Note: The context reset happens automatically because selected_game_id will be null
+    // and the backend will use global_search when there are features but no base game
   };
 
   const addPromptChip = (prompt) => {
@@ -531,7 +630,7 @@ function PistaChat({ user }) {
     }
   };
 
-  const handleRequireFeature = (messageIndex, featureType, featureValue) => {
+  const handleRequireFeature = (messageIndex, featureType, featureValue, autoRequery = true) => {
     setRequiredFeatures((prev) => {
       const newRequired = { ...prev };
       if (!newRequired[messageIndex]) {
@@ -552,7 +651,11 @@ function PistaChat({ user }) {
         return prev;
       });
       
-      // Re-query with required feature
+      // Re-query with required feature (only if autoRequery is true)
+      if (!autoRequery) {
+        return;
+      }
+      
       const message = messages[messageIndex];
       if (message && message.querySpec) {
         // Find the original user message that triggered this response
@@ -756,24 +859,59 @@ function PistaChat({ user }) {
   };
 
   const sendMessage = async () => {
-    if (!input.trim()) return;
+    // Prevent duplicate sends - if already processing, don't send again
+    if (isProcessing) return;
+    
+    // Allow sending if there's input OR if there are active required features
+    if (!input.trim() && activeRequiredFeatures.length === 0) return;
+    
+    // If input is empty but we have required features, use a default message
+    const messageText = input.trim() || (activeRequiredFeatures.length > 0 
+      ? `Find games with ${activeRequiredFeatures.map(f => f.value).join(", ")}`
+      : "");
+    if (!messageText) return;
 
-    const userMsg = { role: "user", text: input };
+    const messageId = Date.now();
+    const userMsg = { 
+      role: "user", 
+      text: messageText,
+      messageId: messageId,
+      status: "sending"
+    };
     setMessages((prev) => [...prev, userMsg]);
 
+    // Build context - include all feature information for feature-only searches
+    const requiredFeatureValues = activeRequiredFeatures.length > 0 ? 
+      activeRequiredFeatures.reduce((acc, f) => {
+        if (!acc[f.type]) acc[f.type] = [];
+        acc[f.type].push(f.value);
+        return acc;
+      }, {}) : undefined;
+    
     const context = {
       last_game_id: gameChips.length > 0 ? gameChips[0].id : null,
       useCollection: useCollection,
       selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
       player_chips: playerChips,
       playtime_chips: playtimeChips.map(c => c.value),
+      // Include required features from active required features
+      required_feature_values: requiredFeatureValues,
     };
     
     // If useCollection is checked, explicitly set scope in message
-    let messageText = input;
-    if (useCollection && !messageText.toLowerCase().includes("in my collection") && !messageText.toLowerCase().includes("my collection")) {
-      messageText = messageText + " in my collection";
+    let finalMessageText = messageText;
+    if (useCollection && !finalMessageText.toLowerCase().includes("in my collection") && !finalMessageText.toLowerCase().includes("my collection")) {
+      finalMessageText = finalMessageText + " in my collection";
     }
+
+    // Set processing state and timeout indicator
+    setIsProcessing(true);
+    setShowProcessingIndicator(false);
+    const timeoutId = setTimeout(() => {
+      // Show processing indicator after 5 seconds
+      setShowProcessingIndicator(true);
+    }, 5000);
+    setProcessingTimeout(timeoutId);
 
     try {
       const res = await fetch(`${API_BASE}/chat`, {
@@ -784,7 +922,7 @@ function PistaChat({ user }) {
         },
         body: JSON.stringify({
           user_id: user?.id?.toString() || null,
-          message: messageText,
+          message: finalMessageText,
           context,
           thread_id: threadId,
           selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
@@ -803,6 +941,15 @@ function PistaChat({ user }) {
       }
 
       const data = await res.json();
+
+      // Update message status to "sent"
+      setMessages((prev) => {
+        return prev.map(msg => 
+          msg.messageId === messageId 
+            ? { ...msg, status: "sent" }
+            : msg
+        );
+      });
 
       // Handle A/B test responses
       if (data.ab_responses && data.ab_responses.length > 0) {
@@ -881,7 +1028,26 @@ function PistaChat({ user }) {
           console.error("Failed to get feedback question:", err);
         }
       }
-      setInput("");
+      // After response is processed, automatically add game chips and required features to search text box
+      // Only populate if input is currently empty or matches exactly what we would set
+      // This prevents overwriting user input or re-adding removed game names
+      const currentInputTrimmed = input.trim();
+      const expectedText = (() => {
+        const parts = [];
+        if (gameChips.length > 0) {
+          parts.push(...gameChips.map(g => g.name));
+        }
+        if (activeRequiredFeatures.length > 0) {
+          parts.push(...activeRequiredFeatures.map(f => f.value));
+        }
+        return parts.join(", ");
+      })();
+      
+      // Only update input if it's empty or matches exactly what we would set
+      // This prevents re-adding removed game names
+      if (!currentInputTrimmed || currentInputTrimmed === expectedText) {
+        setInput(expectedText);
+      }
       // Keep game chips for next query in the thread (don't clear them)
       // setGameChips([]); // Removed - persist chips across messages
       // Keep prompt chips and player chips too for context
@@ -908,7 +1074,23 @@ function PistaChat({ user }) {
       }
     } catch (err) {
       console.error("Failed to send message:", err);
+      // Update message status to "error"
+      setMessages((prev) => {
+        return prev.map(msg => 
+          msg.messageId === messageId 
+            ? { ...msg, status: "error" }
+            : msg
+        );
+      });
       alert(err.message || "Failed to send message. Please try again.");
+    } finally {
+      // Clear processing state
+      setIsProcessing(false);
+      setShowProcessingIndicator(false);
+      if (processingTimeout) {
+        clearTimeout(processingTimeout);
+        setProcessingTimeout(null);
+      }
     }
   };
 
@@ -984,7 +1166,19 @@ function PistaChat({ user }) {
             onLikeDislike={handleLikeDislike}
             onFeedbackResponse={handleFeedbackResponse}
             helpfulQuestion={helpfulQuestion}
-            onRequireFeature={handleRequireFeature}
+            onRequireFeature={(messageIndex, featureType, featureValue) => {
+              // Use functional update to get latest input state
+              setInput((currentInput) => {
+                const trimmed = (currentInput || "").trim();
+                const featureText = featureValue + (trimmed ? ", " : "");
+                const newInput = trimmed + (trimmed ? ", " : "") + featureValue;
+                
+                // Add feature as required feature chip (without auto-requery)
+                handleRequireFeature(messageIndex, featureType, featureValue, false);
+                
+                return newInput;
+              });
+            }}
           />
         </div>
 
@@ -1085,52 +1279,108 @@ function PistaChat({ user }) {
         </div>
 
         <div className="chat-input-container" style={{ position: "relative" }}>
-          {/* Game search dropdown for @ mentions */}
-          {atMentionActive && showGameSearch && gameSearchResults.length > 0 && (
-            <div className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000 }}>
-              {gameSearchResults.map((game) => {
-                // Get the current search query to highlight
-                const textBeforeCursor = input.substring(0, cursorPosition);
-                const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-                const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
-                
-                // Highlight matching text in game name - supports multiple words
-                const highlightMatch = (text, query) => {
-                  if (!query) return text;
-                  const words = query.split(/\s+/).filter(w => w.length > 0);
-                  if (words.length === 0) return text;
-                  
-                  // Create regex that matches all words (case insensitive)
-                  const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-                  const regex = new RegExp(`(${pattern})`, 'gi');
-                  const parts = text.split(regex);
-                  return parts.map((part, idx) => 
-                    regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
-                  );
-                };
-                
-                return (
-                  <div
-                    key={game.id}
-                    className="game-search-item"
-                    onClick={() => selectGame(game)}
-                  >
-                    <div style={{ fontWeight: "bold" }}>
-                      {highlightMatch(game.name, query)}
-                      {game.year_published && ` (${game.year_published})`}
-                    </div>
-                    {game.features && game.features.length > 0 && (
-                      <div style={{ fontSize: "0.85rem", opacity: 0.7, marginTop: "0.25rem" }}>
-                        {game.features.slice(0, 5).map((f, idx) => (
-                          <span key={idx} style={{ marginRight: "0.5rem" }}>
-                            {f[0]} {f[1]}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+          {/* Processing indicator - only show after 5 seconds */}
+          {isProcessing && showProcessingIndicator && (
+            <div className="processing-indicator">
+              Processing request...
+            </div>
+          )}
+          
+          {/* Search dropdown for @ mentions - shows both games and features */}
+          {atMentionActive && showGameSearch && (gameSearchResults.length > 0 || featureSearchResults.length > 0) && (
+            <div className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000, maxHeight: "400px", overflowY: "auto" }}>
+              {/* Features section */}
+              {featureSearchResults.length > 0 && (
+                <>
+                  <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderBottom: "1px solid #ddd" }}>
+                    Features
                   </div>
-                );
-              })}
+                  {featureSearchResults.map((feature) => {
+                    const textBeforeCursor = input.substring(0, cursorPosition);
+                    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+                    const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
+                    
+                    const highlightMatch = (text, query) => {
+                      if (!query) return text;
+                      const words = query.split(/\s+/).filter(w => w.length > 0);
+                      if (words.length === 0) return text;
+                      const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+                      const regex = new RegExp(`(${pattern})`, 'gi');
+                      const parts = text.split(regex);
+                      return parts.map((part, idx) => 
+                        regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
+                      );
+                    };
+                    
+                    return (
+                      <div
+                        key={`${feature.type}-${feature.id}`}
+                        className="game-search-item feature-search-item"
+                        onClick={() => selectFeature(feature)}
+                        style={{ paddingLeft: "2rem" }}
+                      >
+                        <div>
+                          <span style={{ marginRight: "0.5rem" }}>{feature.icon}</span>
+                          <span style={{ fontWeight: "500" }}>{highlightMatch(feature.name, query)}</span>
+                          <span style={{ fontSize: "0.85rem", opacity: 0.7, marginLeft: "0.5rem" }}>
+                            ({feature.type})
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+              
+              {/* Games section */}
+              {gameSearchResults.length > 0 && (
+                <>
+                  {featureSearchResults.length > 0 && (
+                    <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderTop: "1px solid #ddd", borderBottom: "1px solid #ddd" }}>
+                      Games
+                    </div>
+                  )}
+                  {gameSearchResults.map((game) => {
+                    const textBeforeCursor = input.substring(0, cursorPosition);
+                    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+                    const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
+                    
+                    const highlightMatch = (text, query) => {
+                      if (!query) return text;
+                      const words = query.split(/\s+/).filter(w => w.length > 0);
+                      if (words.length === 0) return text;
+                      const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+                      const regex = new RegExp(`(${pattern})`, 'gi');
+                      const parts = text.split(regex);
+                      return parts.map((part, idx) => 
+                        regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
+                      );
+                    };
+                    
+                    return (
+                      <div
+                        key={game.id}
+                        className="game-search-item"
+                        onClick={() => selectGame(game)}
+                      >
+                        <div style={{ fontWeight: "bold" }}>
+                          {highlightMatch(game.name, query)}
+                          {game.year_published && ` (${game.year_published})`}
+                        </div>
+                        {game.features && game.features.length > 0 && (
+                          <div style={{ fontSize: "0.85rem", opacity: 0.7, marginTop: "0.25rem" }}>
+                            {game.features.slice(0, 5).map((f, idx) => (
+                              <span key={idx} style={{ marginRight: "0.5rem" }}>
+                                {f[0]} {f[1]}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
             </div>
           )}
           <div className="chat-input-row">
@@ -1231,7 +1481,7 @@ function PistaChat({ user }) {
                 setCursorPosition(e.target.selectionStart || 0);
               }}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !atMentionActive) {
+                if (e.key === "Enter" && !atMentionActive && !isProcessing) {
                   sendMessage();
                 } else if (e.key === "Escape") {
                   setAtMentionActive(false);
@@ -1239,9 +1489,23 @@ function PistaChat({ user }) {
                 }
               }}
                 placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Type @ to search for games, mechanics, categories, designers, or publishers"}
+                disabled={isProcessing}
               />
             </div>
-            <button onClick={sendMessage}>Send</button>
+            <button 
+              onClick={sendMessage} 
+              disabled={isProcessing || (!input.trim() && activeRequiredFeatures.length === 0)}
+              title={isProcessing ? "Processing request..." : "Send message"}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                minWidth: "40px",
+                padding: "0.5rem"
+              }}
+            >
+              {isProcessing ? "⏸️" : "📤"}
+            </button>
           </div>
           <div className="image-upload-section">
             <input
@@ -1340,6 +1604,17 @@ function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackRes
                 ? highlightText(m.text, m.querySpec)
                 : m.text}
             </div>
+            {/* Status bar for user messages */}
+            {m.role === "user" && m.status && (
+              <div className="message-status" style={{
+                fontSize: "0.75rem",
+                color: m.status === "sending" ? "#1976d2" : m.status === "sent" ? "#4caf50" : "#f44336",
+                marginTop: "0.25rem",
+                fontStyle: "italic"
+              }}>
+                {m.status === "sending" ? "Sending..." : m.status === "sent" ? "Sent" : "Error"}
+              </div>
+            )}
             {m.image && (
               <img src={m.image} alt="Generated" className="generated-image" />
             )}
@@ -1529,9 +1804,10 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
                       {r.description}
                     </div>
                   )}
-                  {sharedFeatures.length > 0 && (
-                    <div className="shared-features-chips" style={{ marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
-                      {sharedFeatures.map((feature, idx) => (
+                  {/* Always show feature chips section, even if empty, to make it clear where features would appear */}
+                  <div className="shared-features-chips" style={{ marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.25rem", minHeight: "1.5rem" }}>
+                    {sharedFeatures.length > 0 ? (
+                      sharedFeatures.map((feature, idx) => (
                         <div 
                           key={`${feature.type}-${feature.value}-${idx}`}
                           className="shared-feature-chip"
@@ -1542,13 +1818,28 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
                             }
                           }}
                           title={`Click to require ${feature.value} (exclude games without this feature)`}
+                          style={{
+                            padding: "0.25rem 0.5rem",
+                            backgroundColor: "var(--bg-secondary, #f5f5f5)",
+                            border: "1px solid var(--border-color, #ddd)",
+                            borderRadius: "4px",
+                            cursor: "pointer",
+                            fontSize: "0.85rem",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "0.25rem"
+                          }}
                         >
                           <span>{feature.value}</span>
-                          <span className="shared-feature-chip-add">+</span>
+                          <span className="shared-feature-chip-add" style={{ fontWeight: "bold", color: "#1976d2" }}>+</span>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                      ))
+                    ) : (
+                      <span style={{ fontSize: "0.8rem", opacity: 0.6, fontStyle: "italic" }}>
+                        No shared features available
+                      </span>
+                    )}
+                  </div>
                   {r.language_dependence && r.language_dependence.level >= 4 && r.language_dependence.level !== 81 && r.language_dependence.level !== 51 && (
                     <div style={{ 
                       marginTop: "0.5rem", 

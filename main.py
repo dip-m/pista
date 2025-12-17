@@ -626,13 +626,13 @@ def import_bgg_collection(current_user: Dict[str, Any] = Depends(get_current_use
 
 @app.get("/games/search")
 def search_games(q: str, limit: int = 10):
-    """Search games by name and features with lookahead. Cached for performance."""
+    """Search games and features (mechanics, categories, designers, publishers) with lookahead. Cached for performance."""
     # Input validation and sanitization
     if not q:
-        return []
+        return {"games": [], "features": []}
     q = q.strip()
     if len(q) < 2:
-        return []
+        return {"games": [], "features": []}
     
     # Sanitize to prevent SQL injection (though parameterized queries are safe)
     q = q.replace("%", "").replace("_", "")[:100]  # Limit length
@@ -645,13 +645,11 @@ def search_games(q: str, limit: int = 10):
     
     try:
         # Split query into words for better matching
-        # "Escape Curse" should match "Escape: The Curse of the Temple"
         query_words = q.split()
+        search_pattern = f"%{q}%"
         
-        # Build SQL to search both game names AND features (mechanics, categories, designers, publishers)
-        # Search in: games.name, mechanics.name, categories.name, designers.name, publishers.name
+        # Search for games
         if len(query_words) == 1:
-            # Single word: search in all fields
             sql = """SELECT DISTINCT g.id, g.name, g.year_published, g.thumbnail, g.average_rating, g.num_ratings
                      FROM games g
                      LEFT JOIN game_mechanics gm ON gm.game_id = g.id
@@ -669,10 +667,8 @@ def search_games(q: str, limit: int = 10):
                         OR LOWER(p.name) LIKE LOWER(?)
                      ORDER BY g.num_ratings DESC NULLS LAST, g.average_rating DESC NULLS LAST, g.name
                      LIMIT ?"""
-            params = (f"%{query_words[0]}%", f"%{query_words[0]}%", f"%{query_words[0]}%", f"%{query_words[0]}%", f"%{query_words[0]}%", limit)
+            params = (search_pattern, search_pattern, search_pattern, search_pattern, search_pattern, limit)
         else:
-            # Multiple words: each word must appear somewhere (in name OR any feature)
-            # Use a more complex query that checks if all words appear in any combination
             word_conditions = []
             for word in query_words:
                 word_conditions.append(f"""(LOWER(g.name) LIKE LOWER(?) 
@@ -695,11 +691,10 @@ def search_games(q: str, limit: int = 10):
                      WHERE {conditions}
                      ORDER BY g.num_ratings DESC NULLS LAST, g.average_rating DESC NULLS LAST, g.name
                      LIMIT ?"""
-            # Each word needs 5 parameters (name, mechanic, category, designer, publisher)
             params = tuple([f"%{word}%" for word in query_words for _ in range(5)] + [limit])
         
         cur = ENGINE_CONN.execute(sql, params)
-        results = []
+        game_results = []
         seen_ids = set()
         for row in cur.fetchall():
             if row[0] not in seen_ids:
@@ -714,7 +709,8 @@ def search_games(q: str, limit: int = 10):
                            WHERE gm.game_id = ? LIMIT 3""",
                         (game_id,)
                     )
-                    mechanics = [r[0] for r in cur_m.fetchall()] if cur_m else []
+                    mechanics_rows = cur_m.fetchall() if cur_m else []
+                    mechanics = [r[0] for r in mechanics_rows if len(r) > 0]
                     features.extend([("⚙️", m) for m in mechanics])
                     
                     # Get categories
@@ -724,7 +720,8 @@ def search_games(q: str, limit: int = 10):
                            WHERE gc.game_id = ? LIMIT 2""",
                         (game_id,)
                     )
-                    categories = [r[0] for r in cur_c.fetchall()] if cur_c else []
+                    rows = cur_c.fetchall() if cur_c else []
+                    categories = [r[0] for r in rows if len(r) > 0] if rows else []
                     features.extend([("🏷️", c) for c in categories])
                     
                     # Get designers
@@ -734,7 +731,8 @@ def search_games(q: str, limit: int = 10):
                            WHERE gd.game_id = ? LIMIT 2""",
                         (game_id,)
                     )
-                    designers = [r[0] for r in cur_d.fetchall()] if cur_d else []
+                    designers_rows = cur_d.fetchall() if cur_d else []
+                    designers = [r[0] for r in designers_rows if len(r) > 0]
                     features.extend([("👤", d) for d in designers])
                     
                     # Get publishers
@@ -744,32 +742,123 @@ def search_games(q: str, limit: int = 10):
                            WHERE gp.game_id = ? LIMIT 2""",
                         (game_id,)
                     )
-                    publishers = [r[0] for r in cur_p.fetchall()] if cur_p else []
+                    publishers_rows = cur_p.fetchall() if cur_p else []
+                    publishers = [r[0] for r in publishers_rows if len(r) > 0]
                     features.extend([("🏢", p) for p in publishers])
                 except sqlite3.Error as e:
                     logger.error(f"Error fetching features for game {game_id}: {e}")
                     pass
                 
-                results.append({
+                game_results.append({
                     "id": game_id,
                     "name": row[1],
                     "year_published": row[2],
                     "thumbnail": row[3],
                     "average_rating": row[4],
                     "num_ratings": row[5],
-                    "features": features  # Add features for display
+                    "features": features
                 })
                 seen_ids.add(game_id)
-                if len(results) >= limit:
+                if len(game_results) >= limit:
                     break
         
+        # Search for features separately (mechanics, categories, designers, publishers)
+        feature_results = []
+        feature_limit = 10  # Limit features per type
+        
+        # Search mechanics
+        try:
+            cur_m = ENGINE_CONN.execute(
+                """SELECT DISTINCT id, name FROM mechanics 
+                   WHERE LOWER(name) LIKE LOWER(?) 
+                   ORDER BY name LIMIT ?""",
+                (search_pattern, feature_limit)
+            )
+            mechanics_rows = cur_m.fetchall()
+            for row in mechanics_rows:
+                if len(row) >= 2:
+                    feature_results.append({
+                        "type": "mechanics",
+                        "id": row[0],
+                        "name": row[1],
+                        "icon": "⚙️"
+                    })
+        except sqlite3.Error as e:
+            logger.error(f"Error searching mechanics: {e}")
+        
+        # Search categories
+        try:
+            cur_c = ENGINE_CONN.execute(
+                """SELECT DISTINCT id, name FROM categories 
+                   WHERE LOWER(name) LIKE LOWER(?) 
+                   ORDER BY name LIMIT ?""",
+                (search_pattern, feature_limit)
+            )
+            categories_rows = cur_c.fetchall()
+            for row in categories_rows:
+                if len(row) >= 2:
+                    feature_results.append({
+                        "type": "categories",
+                        "id": row[0],
+                        "name": row[1],
+                        "icon": "🏷️"
+                    })
+        except sqlite3.Error as e:
+            logger.error(f"Error searching categories: {e}")
+        
+        # Search designers
+        try:
+            cur_d = ENGINE_CONN.execute(
+                """SELECT DISTINCT id, name FROM designers 
+                   WHERE LOWER(name) LIKE LOWER(?) 
+                   ORDER BY name LIMIT ?""",
+                (search_pattern, feature_limit)
+            )
+            designers_rows = cur_d.fetchall()
+            for row in designers_rows:
+                if len(row) >= 2:
+                    feature_results.append({
+                        "type": "designers",
+                        "id": row[0],
+                        "name": row[1],
+                        "icon": "👤"
+                    })
+        except sqlite3.Error as e:
+            logger.error(f"Error searching designers: {e}")
+        
+        # Search publishers
+        try:
+            cur_p = ENGINE_CONN.execute(
+                """SELECT DISTINCT id, name FROM publishers 
+                   WHERE LOWER(name) LIKE LOWER(?) 
+                   ORDER BY name LIMIT ?""",
+                (search_pattern, feature_limit)
+            )
+            publishers_rows = cur_p.fetchall()
+            for row in publishers_rows:
+                if len(row) >= 2:
+                    feature_results.append({
+                        "type": "publishers",
+                        "id": row[0],
+                        "name": row[1],
+                        "icon": "🏢"
+                    })
+        except sqlite3.Error as e:
+            logger.error(f"Error searching publishers: {e}")
+        
+        result = {
+            "games": game_results,
+            "features": feature_results
+        }
+        
+        
         # Cache results
-        set_cached(cache_key, results)
-        logger.debug(f"Game search: '{q}' returned {len(results)} results")
-        return results
+        set_cached(cache_key, result)
+        logger.debug(f"Search: '{q}' returned {len(game_results)} games and {len(feature_results)} features")
+        return result
     except sqlite3.Error as e:
-        logger.error(f"Database error in game search: {e}", exc_info=True)
-        return []
+        logger.error(f"Database error in search: {e}", exc_info=True)
+        return {"games": [], "features": []}
 
 
 @app.get("/profile/collection")
