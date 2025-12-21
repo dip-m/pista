@@ -32,9 +32,18 @@ SCHEMA_FILE = os.path.join(BASE_DIR, "update_utils", "schema.sql")
 app = FastAPI(title="Pista Service")
 security = HTTPBearer(auto_error=False)  # Make auth optional
 
+# Import configuration
+try:
+    from backend.config import ALLOWED_ORIGINS
+except ImportError:
+    # Fallback if config module doesn't exist
+    import os
+    ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+    ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2293,4 +2302,25 @@ def delete_ab_test_config(
     except Exception as e:
         logger.error(f"Error deleting A/B test config: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to delete A/B test config: {str(e)}")
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for monitoring and load balancers."""
+    try:
+        # Check database connection
+        if ENGINE_CONN:
+            ENGINE_CONN.execute("SELECT 1").fetchone()
+        
+        return {
+            "status": "healthy",
+            "database": "connected" if ENGINE_CONN else "not_initialized",
+            "engine": "loaded" if ENGINE else "not_loaded"
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "error": str(e)
+        }, 503
 

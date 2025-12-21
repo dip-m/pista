@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: pista-backend
+    env: python
+    buildCommand: pip install -r update_utils/requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: DB_PATH
+        value: ./gen/bgg_semantic.db
+      - key: ENVIRONMENT
+        value: production
+

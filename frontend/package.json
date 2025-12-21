@@ -17,7 +17,9 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "deploy": "npm run build && vercel --prod",
+    "build:android": "npm run build && npx cap sync android"
   },
   "eslintConfig": {
     "extends": [

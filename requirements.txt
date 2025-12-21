@@ -1,0 +1,6 @@
+# Production requirements for Pista backend
+# This file consolidates dependencies from update_utils/requirements.txt
+# Use this for deployment platforms that expect requirements.txt in root
+
+-r update_utils/requirements.txt
+
