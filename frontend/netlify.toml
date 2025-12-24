@@ -1,6 +1,8 @@
 [build]
   publish = "build"
   command = "npm run build"
+  # If deploying from root directory, set base to "frontend"
+  # base = "frontend"
 
 [build.environment]
   NODE_VERSION = "18"
