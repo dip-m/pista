@@ -1,0 +1,55 @@
+# Exclude large files and directories from Render deployment
+# to avoid /tmp storage issues on free tier
+
+# Large data files
+gen/
+*.db
+*.index
+*.faiss
+*.sqlite
+*.sqlite3
+
+# Python cache and virtual environments
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Node modules (if any)
+node_modules/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Large model files (if committed)
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.pth
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+

@@ -2,9 +2,19 @@ services:
   - type: web
     name: pista-backend
     env: python
-    buildCommand: pip install -r update_utils/requirements.txt
+    # Use --no-cache-dir to prevent pip from using /tmp (free tier has 2GB limit)
+    buildCommand: pip install --no-cache-dir -r update_utils/requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
+      # Use project directory for model cache (not /tmp) to avoid 2GB limit
+      - key: TRANSFORMERS_CACHE
+        value: /opt/render/project/src/.cache/transformers
+      - key: SENTENCE_TRANSFORMERS_HOME
+        value: /opt/render/project/src/.cache/sentence-transformers
+      - key: HF_HOME
+        value: /opt/render/project/src/.cache/huggingface
+      - key: TORCH_HOME
+        value: /opt/render/project/src/.cache/torch
       - key: ALLOWED_ORIGINS
         sync: false
       - key: JWT_SECRET_KEY
