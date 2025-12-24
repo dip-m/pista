@@ -1,5 +1,5 @@
 // frontend/src/components/features/PistaChat.jsx
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
 import Marketplace from "./Marketplace";
@@ -39,6 +39,7 @@ function PistaChat({ user }) {
   const [gameChips, setGameChips] = useState([]);
   const [playerChips, setPlayerChips] = useState([]);
   const [playtimeChips, setPlaytimeChips] = useState([]);
+  const [doINeedChips, setDoINeedChips] = useState([]); // [{id, name, game_id}, ...]
   const [useCollection, setUseCollection] = useState(false);
   const [threadId, setThreadId] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
@@ -59,6 +60,8 @@ function PistaChat({ user }) {
   // eslint-disable-next-line no-unused-vars
   const [requiredFeatures, setRequiredFeatures] = useState({}); // {messageIndex: {mechanics: Set, categories: Set, ...}}
   const [activeRequiredFeatures, setActiveRequiredFeatures] = useState([]); // [{type, value, key, messageIndex}, ...] for display in chips
+  const [dislikeDetails, setDislikeDetails] = useState({}); // Store additional details for each message
+  const [showDislikeInput, setShowDislikeInput] = useState({}); // Track which messages show input
   
   // Note: requiredFeatures state is managed via setRequiredFeatures in handleRequireFeature and removeRequiredFeature
 
@@ -342,6 +345,20 @@ function PistaChat({ user }) {
     }
   };
 
+  const removeDoINeedChip = (chipId) => {
+    setDoINeedChips(doINeedChips.filter(c => c.id !== chipId));
+  };
+
+  const handleDoINeedChipClick = (chip) => {
+    // Re-trigger the "Do I need" query
+    const query = `Do I need ${chip.name}?`;
+    setInput(query);
+    // Auto-send the message
+    setTimeout(() => {
+      sendMessage();
+    }, 100);
+  };
+
   const removeGameChip = (gameId) => {
     const game = gameChips.find(g => g.id === gameId);
     if (!game) return;
@@ -464,6 +481,7 @@ function PistaChat({ user }) {
     setGameChips([]);
     setPlayerChips([]);
     setPlaytimeChips([]);
+    setDoINeedChips([]);
     setUseCollection(false);
   };
 
@@ -482,6 +500,20 @@ function PistaChat({ user }) {
     if (!option) {
       console.error("Could not find option for action:", action);
       return;
+    }
+    
+    // If dislike, show input box first (don't submit yet)
+    if (action === "dislike" && option.text === "No") {
+      setShowDislikeInput(prev => ({ ...prev, [messageIndex]: true }));
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[messageIndex] = {
+          ...updated[messageIndex],
+          disliked: true,
+        };
+        return updated;
+      });
+      return; // Don't submit yet, wait for user to optionally add details
     }
     
     // Update local state immediately
@@ -507,6 +539,7 @@ function PistaChat({ user }) {
           question_id: helpfulQuestion.id,
           option_id: option.id,
           response: null,
+          additional_details: null,
           context: JSON.stringify({
             message_index: messageIndex,
             message_text: message.text.substring(0, 100), // First 100 chars for context
@@ -532,6 +565,61 @@ function PistaChat({ user }) {
         };
         return updated;
       });
+    }
+  };
+
+  const handleDislikeSubmit = async (messageIndex) => {
+    if (!user || !helpfulQuestion) return;
+    
+    const message = messages[messageIndex];
+    if (!message || message.role !== "assistant") return;
+    
+    // Find the No option
+    const option = helpfulQuestion.options?.find(opt => opt.text === "No");
+    if (!option) return;
+    
+    const additionalDetails = dislikeDetails[messageIndex] || "";
+    
+    // Submit feedback with optional additional details
+    try {
+      const res = await fetch(`${API_BASE}/feedback/respond`, {
+        method: "POST",
+        headers: {
+          ...authService.getAuthHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question_id: helpfulQuestion.id,
+          option_id: option.id,
+          response: null,
+          additional_details: additionalDetails.trim() || null,
+          context: JSON.stringify({
+            message_index: messageIndex,
+            message_text: message.text.substring(0, 100),
+          }),
+          thread_id: threadId || null,
+        }),
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        console.error("Failed to submit dislike feedback:", errorData);
+        throw new Error(errorData.detail || "Failed to submit feedback");
+      }
+      
+      // Hide input after successful submission
+      setShowDislikeInput(prev => {
+        const newState = { ...prev };
+        delete newState[messageIndex];
+        return newState;
+      });
+      setDislikeDetails(prev => {
+        const newState = { ...prev };
+        delete newState[messageIndex];
+        return newState;
+      });
+    } catch (err) {
+      console.error("Failed to submit dislike feedback:", err);
     }
   };
 
@@ -1072,6 +1160,33 @@ function PistaChat({ user }) {
       if (data.query_spec?.scope === "user_collection") {
         setUseCollection(true);
       }
+
+      // Add "Do I need" chip if this was a collection_recommendation query
+      if (data.query_spec?.intent === "collection_recommendation" && data.query_spec?.base_game_id) {
+        // Get game name from game chips or extract from user message
+        let gameName = null;
+        let gameId = data.query_spec.base_game_id;
+        
+        // Try to find game name from game chips
+        const gameChip = gameChips.find(g => g.id === gameId);
+        if (gameChip) {
+          gameName = gameChip.name;
+        } else {
+          // Try to extract from the last user message
+          const lastUserMessage = messages.find(m => m.role === "user");
+          if (lastUserMessage) {
+            // Extract game name from "Do I need X?" query
+            const match = lastUserMessage.text.match(/do i need (.+?)\??$/i);
+            if (match) {
+              gameName = match[1].trim();
+            }
+          }
+        }
+        
+        if (gameName && !doINeedChips.find(c => c.game_id === gameId)) {
+          setDoINeedChips([...doINeedChips, { id: Date.now(), name: gameName, game_id: gameId }]);
+        }
+      }
     } catch (err) {
       console.error("Failed to send message:", err);
       // Update message status to "error"
@@ -1166,6 +1281,12 @@ function PistaChat({ user }) {
             onLikeDislike={handleLikeDislike}
             onFeedbackResponse={handleFeedbackResponse}
             helpfulQuestion={helpfulQuestion}
+            showDislikeInput={showDislikeInput}
+            dislikeDetails={dislikeDetails}
+            setDislikeDetails={setDislikeDetails}
+            setShowDislikeInput={setShowDislikeInput}
+            handleDislikeSubmit={handleDislikeSubmit}
+            setMessages={setMessages}
             onRequireFeature={(messageIndex, featureType, featureValue) => {
               // Use functional update to get latest input state
               setInput((currentInput) => {
@@ -1212,6 +1333,24 @@ function PistaChat({ user }) {
                 onClick={() => removeGameChip(game.id)}
                 className="chip-remove"
                 title="Remove game"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          {doINeedChips.map((chip) => (
+            <div className="chip do-i-need-chip" key={chip.id}>
+              <span 
+                onClick={() => handleDoINeedChipClick(chip)}
+                style={{ cursor: "pointer", flex: 1 }}
+                title="Click to ask again"
+              >
+                ❓ Do I need {chip.name}?
+              </span>
+              <button
+                onClick={() => removeDoINeedChip(chip.id)}
+                className="chip-remove"
+                title="Remove"
               >
                 ×
               </button>
@@ -1466,30 +1605,159 @@ function PistaChat({ user }) {
                   </span>
                 </div>
               )}
-              <input
-              ref={setInputRef}
-              value={input}
-              onChange={handleInputChange}
-              onSelect={(e) => {
-                setCursorPosition(e.target.selectionStart || 0);
-              }}
-              onClick={(e) => {
-                setCursorPosition(e.target.selectionStart || 0);
-              }}
-              onKeyUp={(e) => {
-                setCursorPosition(e.target.selectionStart || 0);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !atMentionActive && !isProcessing) {
-                  sendMessage();
-                } else if (e.key === "Escape") {
-                  setAtMentionActive(false);
-                  setShowGameSearch(false);
-                }
-              }}
-                placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Type @ to search for games, mechanics, categories, designers, or publishers"}
-                disabled={isProcessing}
-              />
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", width: "100%" }}>
+                <input
+                  ref={setInputRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onSelect={(e) => {
+                    setCursorPosition(e.target.selectionStart || 0);
+                  }}
+                  onClick={(e) => {
+                    setCursorPosition(e.target.selectionStart || 0);
+                  }}
+                  onKeyUp={(e) => {
+                    setCursorPosition(e.target.selectionStart || 0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !atMentionActive && !isProcessing) {
+                      sendMessage();
+                    } else if (e.key === "Escape") {
+                      setAtMentionActive(false);
+                      setShowGameSearch(false);
+                    }
+                  }}
+                  placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Type @ to search for games, mechanics, categories, designers, or publishers"}
+                  disabled={isProcessing}
+                  style={{ flex: 1 }}
+                />
+                {/* Image upload button - requires game selection first */}
+                <button
+                  onClick={async () => {
+                    // Check if game is selected
+                    const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
+                    const currentContext = input.trim() || null;
+                    
+                    if (!lastGameId) {
+                      // Prompt user to select a game first
+                      alert("Please select a game first using @ mention in the search box");
+                      // Focus on input to help user
+                      if (inputRef) {
+                        inputRef.focus();
+                      }
+                      return;
+                    }
+                    
+                    // Show fake-door message immediately (no file upload needed)
+                    try {
+                      const res = await fetch(`${API_BASE}/image/generate`, {
+                        method: "POST",
+                        headers: {
+                          ...authService.getAuthHeaders(),
+                          "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                          game_id: lastGameId,
+                          context: currentContext,
+                        }),
+                      });
+                      
+                      if (res.ok) {
+                        const data = await res.json();
+                        const fakeMsg = {
+                          role: "assistant",
+                          text: data.message,
+                          messageId: Date.now(),
+                          isFakeDoor: true, // Flag to hide like/dislike buttons
+                        };
+                        setMessages((prev) => [...prev, fakeMsg]);
+                      } else {
+                        alert("Failed to process request");
+                      }
+                    } catch (err) {
+                      console.error("Image upload fake-door failed:", err);
+                      alert("Failed to process request");
+                    }
+                  }}
+                  style={{ 
+                    padding: "0.5rem", 
+                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed", 
+                    border: "1px solid #ddd", 
+                    borderRadius: "4px",
+                    backgroundColor: gameChips.length > 0 ? "var(--bg-secondary, #f5f5f5)" : "var(--bg-disabled, #e0e0e0)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    minWidth: "40px",
+                    height: "40px",
+                    opacity: gameChips.length > 0 ? 1 : 0.5
+                  }}
+                  title={gameChips.length > 0 ? "Upload image (coming soon)" : "Select a game first using @ mention"}
+                  disabled={gameChips.length === 0}
+                >
+                  📷
+                </button>
+                {/* Rules explainer button */}
+                <button
+                  onClick={async () => {
+                    // Get current game context
+                    const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
+                    const currentContext = input.trim() || null;
+                    
+                    if (!lastGameId) {
+                      alert("Please select a game first to explain its rules");
+                      return;
+                    }
+                    
+                    try {
+                      const res = await fetch(`${API_BASE}/rules/explain`, {
+                        method: "POST",
+                        headers: {
+                          ...authService.getAuthHeaders(),
+                          "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                          game_id: lastGameId,
+                          context: currentContext,
+                        }),
+                      });
+                      
+                      if (res.ok) {
+                        const data = await res.json();
+                        const fakeMsg = {
+                          role: "assistant",
+                          text: data.message,
+                          messageId: Date.now(),
+                          isFakeDoor: true, // Flag to hide like/dislike buttons
+                        };
+                        setMessages((prev) => [...prev, fakeMsg]);
+                      } else {
+                        alert("Failed to request rules explanation");
+                      }
+                    } catch (err) {
+                      console.error("Rules explainer failed:", err);
+                      alert("Failed to request rules explanation");
+                    }
+                  }}
+                  style={{ 
+                    padding: "0.5rem", 
+                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed", 
+                    border: "1px solid #ddd", 
+                    borderRadius: "4px",
+                    backgroundColor: gameChips.length > 0 ? "var(--bg-secondary, #f5f5f5)" : "var(--bg-disabled, #e0e0e0)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    minWidth: "40px",
+                    height: "40px",
+                    opacity: gameChips.length > 0 ? 1 : 0.5
+                  }}
+                  title={gameChips.length > 0 ? "Explain rules (coming soon)" : "Select a game first"}
+                  disabled={gameChips.length === 0}
+                >
+                  📖
+                </button>
+              </div>
             </div>
             <button 
               onClick={sendMessage} 
@@ -1506,47 +1774,6 @@ function PistaChat({ user }) {
               {isProcessing ? "⏸️" : "📤"}
             </button>
           </div>
-          <div className="image-upload-section">
-            <input
-              type="file"
-              accept="image/*"
-              id="image-upload"
-              style={{ display: "none" }}
-              onChange={async (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
-                
-                const formData = new FormData();
-                formData.append("file", file);
-                
-                try {
-                  const res = await fetch(`${API_BASE}/image/generate`, {
-                    method: "POST",
-                    headers: authService.getAuthHeaders(),
-                    body: formData,
-                  });
-                  
-                  if (res.ok) {
-                    const data = await res.json();
-                    const imageMsg = {
-                      role: "assistant",
-                      text: `Generated image from your upload. Prompt: ${data.prompt}`,
-                      image: data.image,
-                    };
-                    setMessages((prev) => [...prev, imageMsg]);
-                  } else {
-                    alert("Failed to process image");
-                  }
-                } catch (err) {
-                  console.error("Image upload failed:", err);
-                  alert("Failed to upload image");
-                }
-              }}
-            />
-            <label htmlFor="image-upload" className="image-upload-button">
-              📷 Upload Image
-            </label>
-          </div>
         </div>
       </div>
       
@@ -1555,7 +1782,16 @@ function PistaChat({ user }) {
   );
 }
 
-function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackResponse, helpfulQuestion, onRequireFeature }) {
+function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, onFeedbackResponse, helpfulQuestion, onRequireFeature, showDislikeInput, dislikeDetails, setDislikeDetails, setShowDislikeInput, handleDislikeSubmit }) {
+  const messagesEndRef = useRef(null);
+  
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages]);
+  
   const highlightText = (text, querySpec) => {
     if (!querySpec || !text) return text;
     
@@ -1631,9 +1867,10 @@ function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackRes
                 onGameClick={onGameClick}
                 onRequireFeature={onRequireFeature}
                 messageIndex={idx}
+                querySpec={m.querySpec}
               />
             )}
-            {m.role === "assistant" && user && helpfulQuestion && (
+            {m.role === "assistant" && user && helpfulQuestion && !m.isFakeDoor && (
               <div className="message-feedback">
                 <div className="like-dislike-buttons">
                   <button
@@ -1651,6 +1888,50 @@ function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackRes
                     👎
                   </button>
                 </div>
+                {showDislikeInput[idx] && (
+                  <div className="dislike-details-input" style={{ marginTop: "0.5rem", padding: "0.5rem", border: "1px solid #ddd", borderRadius: "4px" }}>
+                    <textarea
+                      value={dislikeDetails[idx] || ""}
+                      onChange={(e) => setDislikeDetails(prev => ({ ...prev, [idx]: e.target.value }))}
+                      placeholder="Optional: Tell us what could be improved..."
+                      rows={3}
+                      style={{ width: "100%", padding: "0.5rem", fontSize: "0.9rem", border: "1px solid #ccc", borderRadius: "4px", resize: "vertical" }}
+                    />
+                    <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
+                      <button
+                        onClick={() => handleDislikeSubmit(idx)}
+                        style={{ padding: "0.5rem 1rem", backgroundColor: "#1976d2", color: "white", border: "none", borderRadius: "4px", cursor: "pointer" }}
+                      >
+                        Submit
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowDislikeInput(prev => {
+                            const newState = { ...prev };
+                            delete newState[idx];
+                            return newState;
+                          });
+                          setDislikeDetails(prev => {
+                            const newState = { ...prev };
+                            delete newState[idx];
+                            return newState;
+                          });
+                          setMessages((prev) => {
+                            const updated = [...prev];
+                            updated[idx] = {
+                              ...updated[idx],
+                              disliked: false,
+                            };
+                            return updated;
+                          });
+                        }}
+                        style={{ padding: "0.5rem 1rem", backgroundColor: "#ccc", color: "black", border: "none", borderRadius: "4px", cursor: "pointer" }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {m.feedbackQuestion && (
                   <FeedbackQuestionInline
                     question={m.feedbackQuestion}
@@ -1663,11 +1944,12 @@ function MessageList({ messages, onGameClick, user, onLikeDislike, onFeedbackRes
           </div>
         ))
       )}
+      <div ref={messagesEndRef} />
     </div>
   );
 }
 
-function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand }) {
+function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand, querySpec }) {
   // If expandedGames is passed as prop (for A/B tests), use it; otherwise create local state
   const [localExpanded, setLocalExpanded] = useState(new Set());
   const isExpanded = (gameId) => {
@@ -1701,6 +1983,10 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
       {results
         .filter(r => r && r.game_id) // Filter out invalid results
         .map((r) => {
+          // Check if this is a collection_recommendation result (has missing_* or extra_* fields)
+          const isCollectionRecommendation = querySpec?.intent === "collection_recommendation" && 
+            (r.missing_mechanics || r.missing_categories || r.extra_mechanics || r.extra_categories);
+          
           // Extract features - use all features if available (feature-only search), otherwise use shared features (similarity search)
           const sharedFeatures = [];
           // Check if this is a feature-only search result (has all features, not shared)
@@ -1736,6 +2022,36 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
             }
           }
           
+          // Extract missing and extra features for collection recommendation
+          const missingFeatures = [];
+          const extraFeatures = [];
+          if (isCollectionRecommendation) {
+            if (r.missing_mechanics) {
+              r.missing_mechanics.forEach(m => missingFeatures.push({ type: "mechanics", value: m }));
+            }
+            if (r.missing_categories) {
+              r.missing_categories.forEach(c => missingFeatures.push({ type: "categories", value: c }));
+            }
+            if (r.missing_designers) {
+              r.missing_designers.forEach(d => missingFeatures.push({ type: "designers", value: d }));
+            }
+            if (r.missing_families) {
+              r.missing_families.forEach(f => missingFeatures.push({ type: "families", value: f }));
+            }
+            if (r.extra_mechanics) {
+              r.extra_mechanics.forEach(m => extraFeatures.push({ type: "mechanics", value: m }));
+            }
+            if (r.extra_categories) {
+              r.extra_categories.forEach(c => extraFeatures.push({ type: "categories", value: c }));
+            }
+            if (r.extra_designers) {
+              r.extra_designers.forEach(d => extraFeatures.push({ type: "designers", value: d }));
+            }
+            if (r.extra_families) {
+              r.extra_families.forEach(f => extraFeatures.push({ type: "families", value: f }));
+            }
+          }
+          
           // Check if this game is unique to this variant (for highlighting)
           const isUnique = variant && differences && (
             (variant === "A" && differences.onlyInA.some(g => g.game_id === r.game_id)) ||
@@ -1747,25 +2063,25 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
               className={`game-card ${isUnique ? "ab-test-unique" : ""}`}
               key={r.game_id}
               style={{ 
-                cursor: onGameClick ? "pointer" : "default",
                 border: isUnique ? "2px solid #1976d2" : undefined,
-                backgroundColor: isUnique ? "rgba(25, 118, 210, 0.05)" : undefined
+                backgroundColor: isUnique ? "rgba(25, 118, 210, 0.05)" : undefined,
+                display: "flex",
+                gap: "1rem",
+                alignItems: "flex-start"
               }}
             >
-              <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start" }}>
+              <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start", flex: 1 }}>
                 {r.thumbnail && (
                   <img 
                     src={r.thumbnail} 
                     alt={r.name || "Game"}
                     style={{ width: "80px", height: "80px", objectFit: "cover", borderRadius: "4px" }}
-                    onClick={() => onGameClick && onGameClick(r)}
                   />
                 )}
                 <div style={{ flex: 1 }}>
                   <div 
                     className="game-card__title"
-                    onClick={() => onGameClick && onGameClick(r)}
-                    style={{ cursor: onGameClick ? "pointer" : "default" }}
+                    style={{ cursor: "default" }}
                   >
                     {r.name || `Game ${r.game_id}`}
                   </div>
@@ -1780,16 +2096,22 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
                         📅 {r.year_published}
                       </span>
                     )}
-                    {/* Only show similarity score if it exists (not for feature-only search) */}
-                    {(r.final_score !== undefined && r.final_score !== null) || 
+                    {/* Show similarity score - especially important for collection recommendation */}
+                    {(r.similarity_score !== undefined && r.similarity_score !== null) ||
+                     (r.final_score !== undefined && r.final_score !== null) || 
                      (r.embedding_similarity !== undefined && r.embedding_similarity !== null) ? (
-                      <span>
+                      <span style={{ 
+                        fontWeight: isCollectionRecommendation ? "bold" : "normal",
+                        color: isCollectionRecommendation ? "#1976d2" : "inherit"
+                      }}>
                         Similarity:{" "}
-                        {r.final_score !== undefined && r.final_score !== null
-                          ? r.final_score.toFixed(2)
-                          : (r.embedding_similarity !== undefined && r.embedding_similarity !== null
-                              ? r.embedding_similarity.toFixed(2)
-                              : "N/A")}
+                        {r.similarity_score !== undefined && r.similarity_score !== null
+                          ? (r.similarity_score * 100).toFixed(1) + "%"
+                          : (r.final_score !== undefined && r.final_score !== null
+                              ? (r.final_score * 100).toFixed(1) + "%"
+                              : (r.embedding_similarity !== undefined && r.embedding_similarity !== null
+                                  ? (r.embedding_similarity * 100).toFixed(1) + "%"
+                                  : "N/A"))}
                       </span>
                     ) : null}
                     {r.average_rating && (
@@ -1827,42 +2149,127 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
                       {r.description}
                     </div>
                   )}
-                  {/* Always show feature chips section, even if empty, to make it clear where features would appear */}
-                  <div className="shared-features-chips" style={{ marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.25rem", minHeight: "1.5rem" }}>
-                    {sharedFeatures.length > 0 ? (
-                      sharedFeatures.map((feature, idx) => (
-                        <div 
-                          key={`${feature.type}-${feature.value}-${idx}`}
-                          className="shared-feature-chip"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (onRequireFeature) {
-                              onRequireFeature(messageIndex, feature.type, feature.value);
-                            }
-                          }}
-                          title={`Click to require ${feature.value} (exclude games without this feature)`}
-                          style={{
-                            padding: "0.25rem 0.5rem",
-                            backgroundColor: "var(--bg-secondary, #f5f5f5)",
-                            border: "1px solid var(--border-color, #ddd)",
-                            borderRadius: "4px",
-                            cursor: "pointer",
-                            fontSize: "0.85rem",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "0.25rem"
-                          }}
-                        >
-                          <span>{feature.value}</span>
-                          <span className="shared-feature-chip-add" style={{ fontWeight: "bold", color: "#1976d2" }}>+</span>
+                  {/* Show similarities and differences for collection recommendation, or shared features for regular search */}
+                  {isCollectionRecommendation ? (
+                    <div style={{ marginTop: "0.5rem" }}>
+                      {/* Similarities (shared features) */}
+                      {sharedFeatures.length > 0 && (
+                        <div style={{ marginBottom: "0.5rem" }}>
+                          <div style={{ fontSize: "0.85rem", fontWeight: "bold", marginBottom: "0.25rem", color: "#4caf50" }}>
+                            ✓ Similarities:
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+                            {sharedFeatures.map((feature, idx) => (
+                              <span
+                                key={`shared-${feature.type}-${feature.value}-${idx}`}
+                                style={{
+                                  padding: "0.25rem 0.5rem",
+                                  backgroundColor: "#e8f5e9",
+                                  border: "1px solid #4caf50",
+                                  borderRadius: "4px",
+                                  fontSize: "0.85rem",
+                                  color: "#2e7d32"
+                                }}
+                              >
+                                {feature.value}
+                              </span>
+                            ))}
+                          </div>
                         </div>
-                      ))
-                    ) : (
-                      <span style={{ fontSize: "0.8rem", opacity: 0.6, fontStyle: "italic" }}>
-                        No shared features available
-                      </span>
-                    )}
-                  </div>
+                      )}
+                      {/* Differences - Missing (in target game but not in collection game) */}
+                      {missingFeatures.length > 0 && (
+                        <div style={{ marginBottom: "0.5rem" }}>
+                          <div style={{ fontSize: "0.85rem", fontWeight: "bold", marginBottom: "0.25rem", color: "#ff9800" }}>
+                            + Missing (in target game):
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+                            {missingFeatures.map((feature, idx) => (
+                              <span
+                                key={`missing-${feature.type}-${feature.value}-${idx}`}
+                                style={{
+                                  padding: "0.25rem 0.5rem",
+                                  backgroundColor: "#fff3e0",
+                                  border: "1px solid #ff9800",
+                                  borderRadius: "4px",
+                                  fontSize: "0.85rem",
+                                  color: "#e65100"
+                                }}
+                              >
+                                {feature.value}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {/* Differences - Extra (in collection game but not in target game) */}
+                      {extraFeatures.length > 0 && (
+                        <div style={{ marginBottom: "0.5rem" }}>
+                          <div style={{ fontSize: "0.85rem", fontWeight: "bold", marginBottom: "0.25rem", color: "#2196f3" }}>
+                            - Extra (in your collection game):
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+                            {extraFeatures.map((feature, idx) => (
+                              <span
+                                key={`extra-${feature.type}-${feature.value}-${idx}`}
+                                style={{
+                                  padding: "0.25rem 0.5rem",
+                                  backgroundColor: "#e3f2fd",
+                                  border: "1px solid #2196f3",
+                                  borderRadius: "4px",
+                                  fontSize: "0.85rem",
+                                  color: "#1565c0"
+                                }}
+                              >
+                                {feature.value}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {sharedFeatures.length === 0 && missingFeatures.length === 0 && extraFeatures.length === 0 && (
+                        <span style={{ fontSize: "0.8rem", opacity: 0.6, fontStyle: "italic" }}>
+                          No feature comparison available
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="shared-features-chips" style={{ marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.25rem", minHeight: "1.5rem" }}>
+                      {sharedFeatures.length > 0 ? (
+                        sharedFeatures.map((feature, idx) => (
+                          <div 
+                            key={`${feature.type}-${feature.value}-${idx}`}
+                            className="shared-feature-chip"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (onRequireFeature) {
+                                onRequireFeature(messageIndex, feature.type, feature.value);
+                              }
+                            }}
+                            title={`Click to require ${feature.value} (exclude games without this feature)`}
+                            style={{
+                              padding: "0.25rem 0.5rem",
+                              backgroundColor: "var(--bg-secondary, #f5f5f5)",
+                              border: "1px solid var(--border-color, #ddd)",
+                              borderRadius: "4px",
+                              cursor: "pointer",
+                              fontSize: "0.85rem",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "0.25rem"
+                            }}
+                          >
+                            <span>{feature.value}</span>
+                            <span className="shared-feature-chip-add" style={{ fontWeight: "bold", color: "#1976d2" }}>+</span>
+                          </div>
+                        ))
+                      ) : (
+                        <span style={{ fontSize: "0.8rem", opacity: 0.6, fontStyle: "italic" }}>
+                          No shared features available
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {r.language_dependence && r.language_dependence.level >= 4 && r.language_dependence.level !== 81 && r.language_dependence.level !== 51 && (
                     <div style={{ 
                       marginTop: "0.5rem", 
@@ -1877,6 +2284,31 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
                     </div>
                   )}
                 </div>
+                {/* Marketplace button on the right side */}
+                {onGameClick && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onGameClick(r);
+                    }}
+                    style={{
+                      padding: "0.5rem",
+                      border: "1px solid #ddd",
+                      borderRadius: "4px",
+                      backgroundColor: "var(--bg-secondary, #f5f5f5)",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      minWidth: "40px",
+                      height: "40px",
+                      alignSelf: "flex-start"
+                    }}
+                    title="View marketplace"
+                  >
+                    🛒
+                  </button>
+                )}
               </div>
             </div>
           );

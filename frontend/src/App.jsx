@@ -106,7 +106,7 @@ function App() {
                   {darkMode ? "☀️" : "🌙"}
                 </button>
                 <button onClick={handleLogout} className="logout-button">
-                  Logout ({user.email || user.username || "User"})
+                  Logout ({user.username || user.email || "User"})
                 </button>
               </>
             ) : (

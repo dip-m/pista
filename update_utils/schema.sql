@@ -208,3 +208,24 @@ CREATE TABLE IF NOT EXISTS ab_test_configs (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS user_ab_preferences (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    config_key  TEXT NOT NULL,
+    preferred_value TEXT NOT NULL,  -- 'A' or 'B' or config value
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, config_key)
+);
+
+CREATE TABLE IF NOT EXISTS fake_door_interactions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER,
+    interaction_type TEXT NOT NULL,  -- 'image_upload' or 'rules_explainer'
+    context     TEXT,  -- JSON string with context (game_id, message, etc.)
+    metadata    TEXT,  -- Additional metadata (file info, etc.)
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);

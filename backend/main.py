@@ -97,6 +97,7 @@ class FeedbackResponseRequest(BaseModel):
     response: Optional[str] = None
     context: Optional[str] = None
     thread_id: Optional[int] = None
+    additional_details: Optional[str] = None  # Optional text for "No" or dislike responses
 
 
 class ChatResponse(BaseModel):
@@ -1357,6 +1358,213 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
     intent = query_spec.get("intent", "recommend_similar")
     reply_text = "I'm not sure what to do with that yet."
     results: Optional[List[Dict[str, Any]]] = None
+    
+    # Initialize thread_id from request (will be updated if new thread is created)
+    thread_id = req.thread_id
+
+    if intent == "collection_recommendation":
+        # "Do I need X in my collection?" feature
+        base_game_id = query_spec.get("base_game_id")
+        if not base_game_id or not current_user:
+            reply_text = "I need to know which game you're asking about, and you need to be logged in to check your collection."
+            results = []
+        else:
+            try:
+                base_game_id = int(base_game_id)
+                # Get user's collection
+                user_collection = load_user_collection(str(current_user["id"]))
+                
+                # Check if game is already in collection
+                if base_game_id in user_collection:
+                    reply_text = f"This game is already in your collection!"
+                    results = []
+                else:
+                    # Get game features
+                    from backend.reasoning_utils import get_game_features, get_feature_rarity_weights
+                    game_features = get_game_features(ENGINE_CONN, base_game_id)
+                    
+                    # Find top 5 similar games in collection
+                    similar_games = []  # List of (game_id, similarity, overlaps, collection_features)
+                    
+                    for collection_game_id in user_collection:
+                        try:
+                            collection_features = get_game_features(ENGINE_CONN, collection_game_id)
+                            from backend.reasoning_utils import compute_meta_similarity
+                            similarity, overlaps, _ = compute_meta_similarity(game_features, collection_features)
+                            similar_games.append((collection_game_id, similarity, overlaps, collection_features))
+                        except Exception as e:
+                            logger.debug(f"Error comparing with game {collection_game_id}: {e}")
+                            continue
+                    
+                    # Sort by similarity and take top 5
+                    similar_games.sort(key=lambda x: x[1], reverse=True)
+                    top_similar_games = similar_games[:5]
+                    
+                    if not top_similar_games:
+                        reply_text = "I couldn't find any similar games in your collection to compare with."
+                        results = []
+                    else:
+                        max_similarity = top_similar_games[0][1]
+                        most_similar_game_id = top_similar_games[0][0]
+                        most_similar_features = top_similar_games[0][2]
+                        
+                        # Get rarity weights for missing features (need to call for each feature type)
+                        rarity_weights = {}
+                        for feature_type in ["mechanics", "categories", "designers", "families"]:
+                            rarity_weights[feature_type] = get_feature_rarity_weights(ENGINE_CONN, feature_type)
+                        
+                        # Find features in target game that are NOT present in ANY game in the collection
+                        # Build a set of all features present in any collection game
+                        all_collection_features = {
+                            "mechanics": set(),
+                            "categories": set(),
+                            "designers": set(),
+                            "families": set()
+                        }
+                        
+                        for collection_game_id in user_collection:
+                            try:
+                                collection_features = get_game_features(ENGINE_CONN, collection_game_id)
+                                for feature_type in ["mechanics", "categories", "designers", "families"]:
+                                    all_collection_features[feature_type].update(collection_features.get(feature_type, set()))
+                            except Exception as e:
+                                logger.debug(f"Error getting features for collection game {collection_game_id}: {e}")
+                                continue
+                        
+                        # Find features unique to target game (not in any collection game)
+                        unique_features = {}
+                        for feature_type in ["mechanics", "categories", "designers", "families"]:
+                            target_features = game_features.get(feature_type, set())
+                            collection_features_set = all_collection_features[feature_type]
+                            unique = target_features - collection_features_set
+                            if unique:
+                                unique_features[feature_type] = list(unique)
+                        
+                        # Calculate average rarity of unique features (features not in any collection game)
+                        avg_rarity = 1.0  # Default (common)
+                        if unique_features:
+                            rarities = []
+                            for feature_type, features in unique_features.items():
+                                if feature_type in rarity_weights:
+                                    for feature in features:
+                                        rarity = rarity_weights[feature_type].get(feature, 1.0)
+                                        rarities.append(rarity)
+                            if rarities:
+                                avg_rarity = sum(rarities) / len(rarities)
+                        
+                        # Decision logic:
+                        # - If similarity > 0.65 and unique features are not rare (avg_rarity > 0.5) → "No"
+                        # - Otherwise → "Yes"
+                        too_similar = max_similarity > 0.65
+                        features_not_rare = avg_rarity > 0.5
+                        
+                        # Build results with top 5 similar games
+                        results = []
+                        for collection_game_id, similarity, overlaps, collection_features in top_similar_games:
+                            try:
+                                # Fetch game details
+                                cur = execute_query(
+                                    ENGINE_CONN,
+                                    "SELECT id, name, year_published, thumbnail, average_rating, num_ratings, min_players, max_players, description FROM games WHERE id = ?",
+                                    (collection_game_id,)
+                                )
+                                row = cur.fetchone()
+                                if not row:
+                                    continue
+                                
+                                # Get designers
+                                designers = []
+                                try:
+                                    cur_d = execute_query(
+                                        ENGINE_CONN,
+                                        """SELECT d.name FROM designers d
+                                           JOIN game_designers gd ON gd.designer_id = d.id
+                                           WHERE gd.game_id = ? ORDER BY d.name""",
+                                        (collection_game_id,)
+                                    )
+                                    designers = [r[0] for r in cur_d.fetchall()]
+                                except:
+                                    pass
+                                
+                                # Calculate similarities (shared features)
+                                shared_mechanics = sorted(overlaps.get("shared_mechanics", []))
+                                shared_categories = sorted(overlaps.get("shared_categories", []))
+                                shared_designers = sorted(overlaps.get("shared_designers", []))
+                                shared_families = sorted(overlaps.get("shared_families", []))
+                                
+                                # Calculate differences
+                                # Missing: features in target game but not in collection game
+                                missing_mechanics = sorted(game_features.get("mechanics", set()) - collection_features.get("mechanics", set()))
+                                missing_categories = sorted(game_features.get("categories", set()) - collection_features.get("categories", set()))
+                                missing_designers = sorted(game_features.get("designers", set()) - collection_features.get("designers", set()))
+                                missing_families = sorted(game_features.get("families", set()) - collection_features.get("families", set()))
+                                
+                                # Extra: features in collection game but not in target game
+                                extra_mechanics = sorted(collection_features.get("mechanics", set()) - game_features.get("mechanics", set()))
+                                extra_categories = sorted(collection_features.get("categories", set()) - game_features.get("categories", set()))
+                                extra_designers = sorted(collection_features.get("designers", set()) - game_features.get("designers", set()))
+                                extra_families = sorted(collection_features.get("families", set()) - game_features.get("families", set()))
+                                
+                                results.append({
+                                    "game_id": collection_game_id,
+                                    "name": row[1],
+                                    "year_published": row[2],
+                                    "thumbnail": row[3],
+                                    "average_rating": row[4],
+                                    "num_ratings": row[5],
+                                    "min_players": row[6],
+                                    "max_players": row[7],
+                                    "description": row[8] if len(row) > 8 and row[8] else None,
+                                    "designers": designers,
+                                    "similarity_score": similarity,
+                                    "final_score": similarity,  # For consistency with other results
+                                    "embedding_similarity": similarity,  # For consistency
+                                    # Shared features (similarities)
+                                    "shared_mechanics": shared_mechanics,
+                                    "shared_categories": shared_categories,
+                                    "shared_designers": shared_designers,
+                                    "shared_families": shared_families,
+                                    # Missing features (what target game has that collection game doesn't)
+                                    "missing_mechanics": missing_mechanics,
+                                    "missing_categories": missing_categories,
+                                    "missing_designers": missing_designers,
+                                    "missing_families": missing_families,
+                                    # Extra features (what collection game has that target game doesn't)
+                                    "extra_mechanics": extra_mechanics,
+                                    "extra_categories": extra_categories,
+                                    "extra_designers": extra_designers,
+                                    "extra_families": extra_families,
+                                })
+                            except Exception as e:
+                                logger.warning(f"Error building result for game {collection_game_id}: {e}")
+                                continue
+                        
+                        if too_similar and features_not_rare:
+                            # Get name of most similar game
+                            similar_game_name = results[0]["name"] if results else "a game in your collection"
+                            reply_text = f"No, you probably don't need this game. It's very similar to '{similar_game_name}' in your collection (similarity: {max_similarity:.1%}), and the unique features it offers are fairly common."
+                        else:
+                            reasons = []
+                            if not too_similar:
+                                reasons.append("it's quite different from games in your collection")
+                            if not features_not_rare:
+                                reasons.append("it offers rare/unique features")
+                            
+                            reason_text = " and ".join(reasons) if reasons else "it would add value to your collection"
+                            reply_text = f"Yes, this game could be a good addition! {reason_text.capitalize()}."
+                
+            except Exception as e:
+                logger.error(f"Error in collection recommendation: {e}", exc_info=True)
+                reply_text = "I encountered an error while analyzing your collection. Please try again."
+                results = []
+        
+        return ChatResponse(
+            reply_text=reply_text,
+            results=results,
+            query_spec=query_spec,
+            thread_id=thread_id if current_user else None,
+            ab_responses=None
+        )
 
     if intent == "recommend_similar":
         base_game_id = query_spec.get("base_game_id")
@@ -1627,9 +1835,52 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                 ab_configs_to_test.append((config_key, config_data))
         
         if ab_configs_to_test and base_game_id is not None:
+            # Check user's A/B test preferences
+            user_ab_preferences = {}
+            if current_user:
+                try:
+                    query = "SELECT config_key, preferred_value FROM user_ab_preferences WHERE user_id = ?"
+                    if DB_TYPE == "postgres":
+                        query = query.replace("?", "%s")
+                    cur_prefs = execute_query(ENGINE_CONN, query, (int(current_user["id"]),))
+                    for row in cur_prefs.fetchall():
+                        user_ab_preferences[row[0]] = row[1]
+                except Exception as e:
+                    logger.debug(f"Error loading user A/B preferences: {e}")
+            
             # Generate A/B responses for each active config (only if we have a base game)
             ab_responses = []
             for config_key, config_data in ab_configs_to_test:
+                # Check if user has a preference for this config
+                user_preference = user_ab_preferences.get(config_key)
+                if user_preference:
+                    # User has a preference - only show that variant
+                    logger.info(f"User has preference for {config_key}: {user_preference}, showing only that variant")
+                    # Determine which config value to use based on preference
+                    if config_key == "use_rarity_weighting" or "rarity" in config_key.lower():
+                        use_rarity = (user_preference == "B")
+                    else:
+                        use_rarity = use_rarity_weighting
+                    
+                    # Generate only the preferred variant
+                    preferred_results = ENGINE.search_similar(
+                        game_id=base_game_id,
+                        top_k=top_k,
+                        include_self=False,
+                        constraints=constraints,
+                        allowed_ids=allowed_ids,
+                        explain=True,
+                        include_features=include_features,
+                        exclude_features=exclude_features,
+                        use_rarity_weighting=use_rarity,
+                        excluded_feature_values=excluded_feature_values,
+                        required_feature_values=required_feature_values,
+                    )
+                    
+                    # Return as regular results (not A/B test)
+                    results = preferred_results
+                    ab_responses = None  # Don't show A/B test question
+                    continue  # Skip A/B test generation for this config
                 # Determine the config value for A and B based on the config_key
                 # Check if this config is related to rarity weighting (flexible matching)
                 if config_key == "use_rarity_weighting" or "rarity" in config_key.lower():
@@ -1697,7 +1948,6 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                 })
 
     # Save to chat history (only if authenticated)
-    thread_id = req.thread_id
     if current_user:
         if not thread_id:
             # Create new thread
@@ -1851,60 +2101,156 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
     )
 
 
+class ImageGenerateRequest(BaseModel):
+    game_id: Optional[int] = None
+    context: Optional[str] = None
+    api_type: Optional[str] = "stable_diffusion"
+
 @app.post("/image/generate")
 async def generate_from_image(
-    file: UploadFile = File(...),
-    api_type: str = "stable_diffusion",
+    req: ImageGenerateRequest,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
 ):
-    """Upload image, analyze it, generate prompt, and create new image."""
-    logger.info(f"Image upload request from user: {current_user['id'] if current_user else 'anonymous'}")
+    """Fake-door: Store image upload interaction for later analysis."""
+    user_id = current_user["id"] if current_user else None
+    logger.info(f"Image upload fake-door request from user: {user_id or 'anonymous'}")
     
-    # Input validation
-    if file.content_type and not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="File must be an image")
+    # Get game_id and context from request body (JSON)
+    game_id = req.game_id
+    context = req.context
+    api_type = req.api_type or "stable_diffusion"
     
-    # Limit file size (10MB)
-    MAX_FILE_SIZE = 10 * 1024 * 1024
+    # Require game_id for fake-door
+    if not game_id:
+        raise HTTPException(status_code=400, detail="game_id is required")
     
     try:
-        # Read image data
-        image_data = await file.read()
-        if len(image_data) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=400, detail="Image too large (max 10MB)")
+        # Get game name for context
+        game_name = None
+        try:
+            cur = execute_query(ENGINE_CONN, "SELECT name FROM games WHERE id = ?", (game_id,))
+            row = cur.fetchone()
+            if row:
+                game_name = row[0]
+        except:
+            pass
         
-        logger.debug(f"Received image: {file.filename}, size: {len(image_data)} bytes")
+        # Store interaction data
+        interaction_context = {
+            "game_id": game_id,
+            "game_name": game_name,
+            "context": context,
+            "api_type": api_type
+        }
         
-        # Validate API type
-        if api_type not in ["stable_diffusion", "dalle"]:
-            api_type = "stable_diffusion"
+        metadata = {
+            "game_id": game_id,
+            "game_name": game_name,
+            "api_type": api_type
+        }
         
-        # Analyze image
-        analysis = analyze_image(image_data)
+        # Store in fake_door_interactions table
+        insert_sql = """INSERT INTO fake_door_interactions (user_id, interaction_type, context, metadata)
+                       VALUES (?, ?, ?, ?)"""
+        if DB_TYPE == "postgres":
+            insert_sql = insert_sql.replace("?", "%s")
         
-        # Generate prompt
-        prompt = generate_prompt_from_analysis(analysis)
+        execute_query(
+            ENGINE_CONN,
+            insert_sql,
+            (
+                user_id,
+                "image_upload",
+                json.dumps(interaction_context),
+                json.dumps(metadata)
+            )
+        )
+        ENGINE_CONN.commit()
         
-        # Generate new image
-        generated_image = generate_image(prompt, api_type=api_type)
+        logger.info(f"Stored image upload fake-door interaction for user {user_id}, game_id: {game_id}")
         
-        # Return as base64 for frontend
-        import base64
-        image_base64 = base64.b64encode(generated_image).decode('utf-8')
-        
-        logger.info("Image generation complete")
+        # Return success message (fake-door)
+        game_name_text = f" for {game_name}" if game_name else ""
         return {
             "success": True,
-            "image": f"data:image/png;base64,{image_base64}",
-            "prompt": prompt,
-            "analysis": analysis
+            "message": f"Thank you for your interest! Image upload functionality{game_name_text} is coming soon. We've recorded your request and will notify you when it's available.",
+            "fake_door": True
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing image: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to process image: {str(e)}")
+        logger.error(f"Error storing image upload interaction: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to process request: {str(e)}")
+
+
+class RulesExplainRequest(BaseModel):
+    game_id: int
+    context: Optional[str] = None
+
+@app.post("/rules/explain")
+def explain_rules(
+    req: RulesExplainRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """Fake-door: Store rules explainer interaction for later analysis."""
+    user_id = current_user["id"] if current_user else None
+    logger.info(f"Rules explainer fake-door request from user: {user_id or 'anonymous'}, game_id: {req.game_id}")
+    
+    try:
+        # Get game name for context
+        game_name = None
+        try:
+            cur = execute_query(ENGINE_CONN, "SELECT name FROM games WHERE id = ?", (req.game_id,))
+            row = cur.fetchone()
+            if row:
+                game_name = row[0]
+        except:
+            pass
+        
+        # Store interaction data
+        interaction_context = {
+            "game_id": req.game_id,
+            "game_name": game_name,
+            "context": req.context,
+            "user_id": user_id
+        }
+        
+        metadata = {
+            "game_id": req.game_id,
+            "game_name": game_name
+        }
+        
+        # Store in fake_door_interactions table
+        insert_sql = """INSERT INTO fake_door_interactions (user_id, interaction_type, context, metadata)
+                       VALUES (?, ?, ?, ?)"""
+        if DB_TYPE == "postgres":
+            insert_sql = insert_sql.replace("?", "%s")
+        
+        execute_query(
+            ENGINE_CONN,
+            insert_sql,
+            (
+                user_id,
+                "rules_explainer",
+                json.dumps(interaction_context),
+                json.dumps(metadata)
+            )
+        )
+        ENGINE_CONN.commit()
+        
+        logger.info(f"Stored rules explainer fake-door interaction for user {user_id}, game_id: {req.game_id}")
+        
+        # Return success message (fake-door)
+        return {
+            "success": True,
+            "message": f"Thank you for your interest! Rules explainer for {game_name or f'game {req.game_id}'} is coming soon. We've recorded your request and will notify you when it's available.",
+            "fake_door": True
+        }
+        
+    except Exception as e:
+        logger.error(f"Error storing rules explainer interaction: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to process request: {str(e)}")
 
 
 @app.get("/games/{game_id}/features")
@@ -2216,7 +2562,7 @@ def get_helpful_question(current_user: Optional[Dict[str, Any]] = Depends(get_cu
                     existing = cur.fetchone()
                     if not existing:
                         query = """INSERT INTO feedback_question_options (question_id, option_text, display_order)
-                               VALUES (%s, %s, %s)"""
+                                   VALUES (%s, %s, %s)"""
                         execute_query(ENGINE_CONN, query, (question_id, option_text, display_order))
                         ENGINE_CONN.commit()
                         logger.info(f"Inserted '{option_text}' option for question {question_id}")
@@ -2228,7 +2574,7 @@ def get_helpful_question(current_user: Optional[Dict[str, Any]] = Depends(get_cu
                     existing = cur.fetchone()
                     if not existing:
                         query = """INSERT INTO feedback_question_options (question_id, option_text, display_order)
-                               VALUES (?, ?, ?)"""
+                                   VALUES (?, ?, ?)"""
                         execute_query(ENGINE_CONN, query, (question_id, option_text, display_order))
                         ENGINE_CONN.commit()
                         logger.info(f"Inserted '{option_text}' option for question {question_id}")
@@ -2327,40 +2673,253 @@ def submit_feedback_response(
             try:
                 option_ids = json.loads(response)
                 for opt_id in option_ids:
-                    execute_query(
-                        ENGINE_CONN,
-                        """INSERT INTO user_feedback_responses 
+                    insert_sql = """INSERT INTO user_feedback_responses 
                            (user_id, question_id, option_id, response, context, thread_id)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (
-                            int(current_user["id"]), 
-                            question_id, 
-                            opt_id,  # Each option gets its own record
-                            None,  # response field is None for multi_select (option_id is used)
-                            context if context is not None else None, 
-                            thread_id if thread_id is not None else None
+                           VALUES (?, ?, ?, ?, ?, ?)"""
+                    if DB_TYPE == "postgres":
+                        insert_sql = insert_sql.replace("?", "%s")
+                    try:
+                        execute_query(
+                            ENGINE_CONN,
+                            insert_sql,
+                            (
+                                int(current_user["id"]), 
+                                question_id, 
+                                opt_id,  # Each option gets its own record
+                                None,  # response field is None for multi_select (option_id is used)
+                                context if context is not None else None, 
+                                thread_id if thread_id is not None else None
+                            )
                         )
-                    )
+                    except Exception as e:
+                        # Handle sequence sync issues for PostgreSQL
+                        is_unique_violation = False
+                        if DB_TYPE == "postgres":
+                            if psycopg2 and psycopg2.errors:
+                                is_unique_violation = isinstance(e, psycopg2.errors.UniqueViolation)
+                            else:
+                                is_unique_violation = "UniqueViolation" in str(type(e).__name__) or "duplicate key" in str(e).lower()
+                        
+                        if is_unique_violation:
+                            logger.warning(f"Sequence out of sync for user_feedback_responses, fixing: {e}")
+                            try:
+                                # Fix the sequence by setting it to max(id) + 1
+                                fix_seq_query = "SELECT setval('user_feedback_responses_id_seq', COALESCE((SELECT MAX(id) FROM user_feedback_responses), 0) + 1, false)"
+                                execute_query(ENGINE_CONN, fix_seq_query)
+                                ENGINE_CONN.commit()
+                                # Retry the insert
+                                execute_query(
+                                    ENGINE_CONN,
+                                    insert_sql,
+                                    (
+                                        int(current_user["id"]), 
+                                        question_id, 
+                                        opt_id,
+                                        None,
+                                        context if context is not None else None, 
+                                        thread_id if thread_id is not None else None
+                                    )
+                                )
+                                logger.info(f"Fixed sequence and inserted feedback response for user {current_user['id']}")
+                            except Exception as retry_error:
+                                logger.error(f"Failed to fix sequence and retry insert: {retry_error}", exc_info=True)
+                                raise
+                        else:
+                            raise
             except json.JSONDecodeError:
                 raise HTTPException(status_code=400, detail="Invalid JSON in response")
         else:
             # For single_select or text, create a single response record
             # Ensure all fields are properly set
-            logger.debug(f"Inserting feedback: user_id={int(current_user['id'])}, question_id={question_id}, option_id={option_id}, response={response}, context={context}, thread_id={thread_id}")
-            execute_query(
-                ENGINE_CONN,
-                """INSERT INTO user_feedback_responses 
+            # If additional_details is provided, append it to response
+            final_response = response
+            if req.additional_details and req.additional_details.strip():
+                if final_response:
+                    final_response = f"{final_response}\n\nAdditional details: {req.additional_details}"
+                else:
+                    final_response = req.additional_details
+            
+            logger.debug(f"Inserting feedback: user_id={int(current_user['id'])}, question_id={question_id}, option_id={option_id}, response={final_response}, context={context}, thread_id={thread_id}")
+            insert_sql = """INSERT INTO user_feedback_responses 
                    (user_id, question_id, option_id, response, context, thread_id)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    int(current_user["id"]),  # Ensure user_id is int
-                    question_id,
-                    option_id,
-                    response,
-                    context,
-                    thread_id
+                   VALUES (?, ?, ?, ?, ?, ?)"""
+            if DB_TYPE == "postgres":
+                insert_sql = insert_sql.replace("?", "%s")
+            try:
+                execute_query(
+                    ENGINE_CONN,
+                    insert_sql,
+                    (
+                        int(current_user["id"]),  # Ensure user_id is int
+                        question_id,
+                        option_id,
+                        final_response,
+                        context,
+                        thread_id
+                    )
                 )
-            )
+            except Exception as e:
+                # Handle sequence sync issues for PostgreSQL
+                is_unique_violation = False
+                if DB_TYPE == "postgres":
+                    if psycopg2 and psycopg2.errors:
+                        is_unique_violation = isinstance(e, psycopg2.errors.UniqueViolation)
+                    else:
+                        is_unique_violation = "UniqueViolation" in str(type(e).__name__) or "duplicate key" in str(e).lower()
+                
+                if is_unique_violation:
+                    logger.warning(f"Sequence out of sync for user_feedback_responses, fixing: {e}")
+                    try:
+                        # Fix the sequence by setting it to max(id) + 1
+                        fix_seq_query = "SELECT setval('user_feedback_responses_id_seq', COALESCE((SELECT MAX(id) FROM user_feedback_responses), 0) + 1, false)"
+                        execute_query(ENGINE_CONN, fix_seq_query)
+                        ENGINE_CONN.commit()
+                        # Retry the insert
+                        execute_query(
+                            ENGINE_CONN,
+                            insert_sql,
+                            (
+                                int(current_user["id"]),
+                                question_id,
+                                option_id,
+                                final_response,
+                                context,
+                                thread_id
+                            )
+                        )
+                        logger.info(f"Fixed sequence and inserted feedback response for user {current_user['id']}")
+                    except Exception as retry_error:
+                        logger.error(f"Failed to fix sequence and retry insert: {retry_error}", exc_info=True)
+                        raise
+                else:
+                    raise
+            
+            # Handle A/B test preferences
+            # If this is a "No" or dislike response to an A/B test question, clear the preference
+            if question_id:
+                # Check if this is an A/B test question by checking if it's linked to an ab_test_config
+                cur_check = execute_query(
+                    ENGINE_CONN,
+                    """SELECT fq.question_text FROM feedback_questions fq 
+                       WHERE fq.id = ?""",
+                    (question_id,)
+                )
+                question_row = cur_check.fetchone()
+                if question_row:
+                    question_text = question_row[0] if question_row else ""
+                    # Check if this looks like an A/B test question (contains "prefer" or "which")
+                    is_ab_question = "prefer" in question_text.lower() or "which" in question_text.lower()
+                    
+                    # Check if this is a "No" or negative response
+                    if option_id:
+                        cur_opt = execute_query(
+                            ENGINE_CONN,
+                            """SELECT option_text FROM feedback_question_options 
+                               WHERE id = ?""",
+                            (option_id,)
+                        )
+                        opt_row = cur_opt.fetchone()
+                        if opt_row:
+                            option_text = opt_row[0] if opt_row else ""
+                            is_negative = option_text.lower() in ["no", "dislike", "neither", "none"]
+                            
+                            if is_ab_question and is_negative:
+                                # Clear A/B test preference for this user
+                                # Find the config_key from the question context or option
+                                # For now, we'll clear all A/B preferences when user says No
+                                # This is a simplified approach - in production you might want to track which config
+                                execute_query(
+                                    ENGINE_CONN,
+                                    """DELETE FROM user_ab_preferences WHERE user_id = ?""",
+                                    (int(current_user["id"]),)
+                                )
+                                ENGINE_CONN.commit()
+                                logger.info(f"Cleared A/B test preferences for user {current_user['id']} after negative feedback")
+            
+            # If this is a positive response to an A/B test (user selected A or B), store preference
+            if question_id and option_id:
+                cur_ab_check = execute_query(
+                    ENGINE_CONN,
+                    """SELECT fq.question_text, fqo.option_text 
+                       FROM feedback_questions fq
+                       JOIN feedback_question_options fqo ON fqo.id = ?
+                       WHERE fq.id = ?""",
+                    (option_id, question_id)
+                )
+                ab_row = cur_ab_check.fetchone()
+                if ab_row:
+                    ab_question_text = ab_row[0] if ab_row else ""
+                    ab_option_text = ab_row[1] if ab_row else ""
+                    
+                    # Check if this is an A/B test question and user selected A or B
+                    is_ab_question = "prefer" in ab_question_text.lower() or "which" in ab_question_text.lower()
+                    is_positive = ab_option_text.lower() not in ["no", "dislike", "neither", "none"]
+                    
+                    if is_ab_question and is_positive:
+                        # Try to extract config_key from context or question
+                        # For now, we'll use a simple approach: check if option text matches A/B labels
+                        # In production, you might want to store config_key in the question context
+                        # For simplicity, we'll check all active A/B configs and see which one matches
+                        cur_configs = execute_query(
+                            ENGINE_CONN,
+                            """SELECT config_key, config_value FROM ab_test_configs WHERE is_active = ?""",
+                            (True if DB_TYPE == "postgres" else 1,)
+                        )
+                        for config_row in cur_configs.fetchall():
+                            config_key = config_row[0]
+                            try:
+                                config_data = json.loads(config_row[1]) if isinstance(config_row[1], str) else config_row[1]
+                                label_a = config_data.get("label_a", "Option A")
+                                label_b = config_data.get("label_b", "Option B")
+                                
+                                # Determine which option was selected
+                                if ab_option_text == label_a or "option a" in ab_option_text.lower():
+                                    preferred_value = "A"
+                                elif ab_option_text == label_b or "option b" in ab_option_text.lower():
+                                    preferred_value = "B"
+                                else:
+                                    continue
+                                
+                                # Store or update preference
+                                if DB_TYPE == "postgres":
+                                    execute_query(
+                                        ENGINE_CONN,
+                                        """INSERT INTO user_ab_preferences (user_id, config_key, preferred_value)
+                                           VALUES (%s, %s, %s)
+                                           ON CONFLICT (user_id, config_key) 
+                                           DO UPDATE SET preferred_value = EXCLUDED.preferred_value, updated_at = CURRENT_TIMESTAMP""",
+                                        (int(current_user["id"]), config_key, preferred_value)
+                                    )
+                                else:
+                                    # SQLite doesn't support ON CONFLICT with multiple columns easily
+                                    # Check if exists first
+                                    cur_exists = execute_query(
+                                        ENGINE_CONN,
+                                        """SELECT id FROM user_ab_preferences WHERE user_id = ? AND config_key = ?""",
+                                        (int(current_user["id"]), config_key)
+                                    )
+                                    if cur_exists.fetchone():
+                                        execute_query(
+                                            ENGINE_CONN,
+                                            """UPDATE user_ab_preferences 
+                                               SET preferred_value = ?, updated_at = CURRENT_TIMESTAMP
+                                               WHERE user_id = ? AND config_key = ?""",
+                                            (preferred_value, int(current_user["id"]), config_key)
+                                        )
+                                    else:
+                                        execute_query(
+                                            ENGINE_CONN,
+                                            """INSERT INTO user_ab_preferences (user_id, config_key, preferred_value)
+                                               VALUES (?, ?, ?)""",
+                                            (int(current_user["id"]), config_key, preferred_value)
+                                        )
+                                
+                                ENGINE_CONN.commit()
+                                logger.info(f"Stored A/B test preference for user {current_user['id']}: {config_key} = {preferred_value}")
+                                break  # Only store for first matching config
+                            except Exception as e:
+                                logger.warning(f"Error processing A/B config for preference: {e}")
+                                continue
         
         ENGINE_CONN.commit()
         
@@ -2603,12 +3162,12 @@ def _get_or_create_ab_question(conn, config_key: str, config_data: Dict[str, Any
         else:
             cur = execute_query(
                 conn,
-                """INSERT INTO feedback_questions (question_text, question_type, is_active)
-                   VALUES (?, ?, ?)""",
-                (question_text, "single_select", 1)
-            )
-            question_id = cur.lastrowid
-            conn.commit()
+            """INSERT INTO feedback_questions (question_text, question_type, is_active)
+               VALUES (?, ?, ?)""",
+            (question_text, "single_select", 1)
+        )
+        question_id = cur.lastrowid
+        conn.commit()
         
         # Create options
         label_a = config_data.get("label_a", "Option A")

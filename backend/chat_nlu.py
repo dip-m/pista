@@ -226,8 +226,14 @@ def interpret_message(
     else:
         base_game_id = None  # Allow feature-only search
 
+    # Check for "Do I need X in my collection?" intent
+    if "do i need" in text_l and len(candidates) >= 1:
+        query_spec["intent"] = "collection_recommendation"
+        query_spec["base_game_id"] = candidates[0]["game_id"]
+        return query_spec
+    
     # If at least two games & language suggests comparison → compare_pair
-    if len(candidates) >= 2 and ("compare" in text_l or "do i need" in text_l):
+    if len(candidates) >= 2 and "compare" in text_l:
         query_spec["intent"] = "compare_pair"
         query_spec["game_a_id"] = candidates[0]["game_id"]
         query_spec["game_b_id"] = candidates[1]["game_id"]
