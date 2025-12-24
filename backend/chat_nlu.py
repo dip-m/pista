@@ -11,8 +11,44 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(__file__)
 NAME_MAP_PATH = os.path.join(BASE_DIR, "..", "name_id_map.json")
 
-with open(NAME_MAP_PATH, "r", encoding="utf-8") as f:
-    NAME_TO_ID: Dict[str, Any] = json.load(f)
+# Load name_id_map.json, or generate it from database if it doesn't exist
+def load_name_id_map() -> Dict[str, Any]:
+    """Load name_id_map.json, generating it from database if needed."""
+    if os.path.exists(NAME_MAP_PATH):
+        try:
+            with open(NAME_MAP_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load {NAME_MAP_PATH}: {e}. Will generate from database.")
+    
+    # File doesn't exist or failed to load - generate from database
+    logger.info(f"{NAME_MAP_PATH} not found. Generating from database...")
+    try:
+        from update_utils.export_name_id_map import get_name_id_map
+        from backend.db import get_connection, put_connection
+        
+        # Get database connection
+        conn = get_connection()
+        try:
+            # Generate from database (works with both SQLite and PostgreSQL)
+            name_id_map = get_name_id_map(conn)
+            # Save it for future use
+            try:
+                os.makedirs(os.path.dirname(NAME_MAP_PATH), exist_ok=True)
+                with open(NAME_MAP_PATH, "w", encoding="utf-8") as f:
+                    json.dump(name_id_map, f, ensure_ascii=False, indent=2)
+                logger.info(f"Generated and saved {NAME_MAP_PATH} with {len(name_id_map)} entries")
+            except Exception as save_err:
+                logger.warning(f"Could not save {NAME_MAP_PATH}: {save_err}. Using in-memory map.")
+            return name_id_map
+        finally:
+            put_connection(conn)
+    except Exception as e:
+        logger.error(f"Failed to generate name_id_map from database: {e}", exc_info=True)
+        # Return empty dict as fallback - game name resolution won't work, but app won't crash
+        return {}
+
+NAME_TO_ID: Dict[str, Any] = load_name_id_map()
 
 
 def normalize(text: str) -> str:
