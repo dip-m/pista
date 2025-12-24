@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from bgg_client import fetch_thing, BGGError
 from parser import parse_game_item
-from db import db_connection, ensure_schema, upsert_game, upsert_links
+from backend.db import db_connection, ensure_schema, upsert_game, upsert_links
 
 
 import logging

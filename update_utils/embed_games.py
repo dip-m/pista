@@ -6,7 +6,7 @@ from typing import List, Tuple
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 
-from db import db_connection, ensure_schema
+from backend.db import db_connection, ensure_schema
 
 
 def _fetch_profiles_to_embed(conn: sqlite3.Connection, reembed_all: bool) -> List[Tuple[int, str]]:

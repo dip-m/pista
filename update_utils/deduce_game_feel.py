@@ -16,7 +16,7 @@ import sqlite3
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db import DB_PATH
+from backend.db import DB_PATH
 from backend.logger_config import logger
 
 try:

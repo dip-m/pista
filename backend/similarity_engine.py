@@ -9,6 +9,7 @@ import sqlite3
 
 from backend.reasoning_utils import get_game_features, compute_meta_similarity, build_reason_summary
 from backend.logger_config import logger
+from .db import execute_query
 
 
 class SimilarityEngine:
@@ -23,7 +24,8 @@ class SimilarityEngine:
     def _fetch_embedding(self, game_id: int) -> np.ndarray:
         """Fetch embedding for a game, with error handling."""
         try:
-            cur = self.conn.execute(
+            cur = execute_query(
+                self.conn,
                 "SELECT vector_json FROM game_embeddings WHERE game_id = ?",
                 (game_id,)
             )
@@ -34,12 +36,12 @@ class SimilarityEngine:
             vec = np.array(json.loads(row[0]), dtype="float32")
             faiss.normalize_L2(vec.reshape(1, -1))
             return vec
-        except (ValueError, json.JSONDecodeError, sqlite3.Error) as e:
+        except (ValueError, json.JSONDecodeError, sqlite3.Error, Exception) as e:
             logger.error(f"Error fetching embedding for game_id={game_id}: {e}", exc_info=True)
             raise
 
     def _fetch_name(self, game_id: int) -> str:
-        cur = self.conn.execute("SELECT name FROM games WHERE id = ?", (game_id,))
+        cur = execute_query(self.conn, "SELECT name FROM games WHERE id = ?", (game_id,))
         row = cur.fetchone()
         return row[0] if row else f"(id={game_id})"
 
@@ -64,6 +66,10 @@ class SimilarityEngine:
         exclude_features: list of feature types to exclude matches on
         """
         logger.debug(f"Searching similar to game_id={game_id}, top_k={top_k}, constraints={constraints}")
+        
+        # Initialize sims and idxs to avoid UnboundLocalError if exception occurs early
+        sims = np.array([])
+        idxs = []
         
         try:
             constraints = constraints or {}
@@ -169,11 +175,12 @@ class SimilarityEngine:
             
             # Fetch additional game data including num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description, designers for reordering
             try:
-                cur = self.conn.execute(
+                cur = execute_query(
+                    self.conn,
                     "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = ?",
                     (gid,)
                 )
-            except sqlite3.Error as e:
+            except (sqlite3.Error, Exception) as e:
                 logger.warning(f"SQL error fetching game {gid}: {e}")
                 filtered_out["failed_explain"] += 1
                 continue
@@ -192,14 +199,15 @@ class SimilarityEngine:
             # Get designers for this game
             designers = []
             try:
-                cur_designers = self.conn.execute(
+                cur_designers = execute_query(
+                    self.conn,
                     """SELECT d.name FROM designers d
                        JOIN game_designers gd ON gd.designer_id = d.id
                        WHERE gd.game_id = ? ORDER BY d.name""",
                     (gid,)
                 )
                 designers = [row[0] for row in cur_designers.fetchall()]
-            except sqlite3.Error:
+            except (sqlite3.Error, Exception):
                 pass
             
             # Early exclusion: Check max_players constraint before expensive explain mode
@@ -541,7 +549,8 @@ class SimilarityEngine:
         
         try:
             # Fetch playing_time from database
-            cur = self.conn.execute(
+            cur = execute_query(
+                self.conn,
                 "SELECT playing_time, min_playtime, max_playtime FROM games WHERE id = ?",
                 (game_id,)
             )

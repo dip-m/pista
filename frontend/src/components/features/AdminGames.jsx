@@ -8,9 +8,10 @@ import GameFeaturesEditor from "./GameFeaturesEditor";
 function AdminGames({ user }) {
   const navigate = useNavigate();
   
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     navigate("/");
-  };
+  }, [navigate]);
+  
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -46,7 +47,7 @@ function AdminGames({ user }) {
     } finally {
       setLoading(false);
     }
-  }, [page, searchQuery]);
+  }, [page, searchQuery, handleClose]);
 
   useEffect(() => {
     loadGames();

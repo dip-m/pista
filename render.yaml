@@ -3,14 +3,39 @@ services:
     name: pista-backend
     env: python
     buildCommand: pip install -r update_utils/requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: ALLOWED_ORIGINS
         sync: false
       - key: JWT_SECRET_KEY
         generateValue: true
-      - key: DB_PATH
-        value: ./gen/bgg_semantic.db
+      - key: DB_TYPE
+        value: postgres
+      - key: DATABASE_URL
+        sync: false  # Set manually to Supabase connection string
       - key: ENVIRONMENT
         value: production
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: MICROSOFT_CLIENT_ID
+        sync: false
+      - key: MICROSOFT_CLIENT_SECRET
+        sync: false
+      - key: META_CLIENT_ID
+        sync: false
+      - key: META_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_REDIRECT_BASE
+        sync: false
+      - key: BEARER_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: REPLICATE_API_TOKEN
+        sync: false
+
+  # PostgreSQL database is hosted on Supabase
+  # No need for Render PostgreSQL service
 

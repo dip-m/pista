@@ -1,5 +1,5 @@
 // frontend/src/components/features/GameFeaturesEditor.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
 
@@ -9,11 +9,7 @@ function GameFeaturesEditor({ gameId, gameName, onClose }) {
   const [selectedType, setSelectedType] = useState("mechanics");
   const [searchTerm, setSearchTerm] = useState("");
 
-  useEffect(() => {
-    loadFeatures();
-  }, [gameId]);
-
-  const loadFeatures = async () => {
+  const loadFeatures = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/games/${gameId}/features`, {
@@ -28,7 +24,11 @@ function GameFeaturesEditor({ gameId, gameName, onClose }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [gameId]);
+
+  useEffect(() => {
+    loadFeatures();
+  }, [loadFeatures]);
 
   const modifyFeature = async (featureType, featureId, action) => {
     try {

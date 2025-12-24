@@ -5,7 +5,7 @@ import sqlite3
 import numpy as np
 import faiss
 
-from db import db_connection, ensure_schema
+from backend.db import db_connection, ensure_schema
 
 
 def main():

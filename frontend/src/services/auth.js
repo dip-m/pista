@@ -19,11 +19,11 @@ export const authService = {
     return token ? { Authorization: `Bearer ${token}` } : {};
   },
 
-  async register(username, password, bggId) {
-    const res = await fetch(`${API_BASE}/auth/register`, {
+  async register(email, password) {
+    const res = await fetch(`${API_BASE}/auth/email/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password, bgg_id: bggId || null }),
+      body: JSON.stringify({ email, password }),
     });
     if (!res.ok) {
       const error = await res.json();
@@ -34,15 +34,35 @@ export const authService = {
     return data;
   },
 
-  async login(username, password) {
-    const res = await fetch(`${API_BASE}/auth/login`, {
+  async login(email, password) {
+    const res = await fetch(`${API_BASE}/auth/email/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ email, password }),
     });
     if (!res.ok) {
       const error = await res.json();
       throw new Error(error.detail || "Login failed");
+    }
+    const data = await res.json();
+    this.setToken(data.access_token);
+    return data;
+  },
+
+  async oauthCallback(provider, token, email = null, name = null) {
+    const res = await fetch(`${API_BASE}/auth/oauth/callback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        provider, 
+        token,
+        email,
+        name 
+      }),
+    });
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.detail || "OAuth authentication failed");
     }
     const data = await res.json();
     this.setToken(data.access_token);

@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional, List, Set
 
 from backend.similarity_engine import SimilarityEngine
-from db import db_connection, ensure_schema
+from .db import db_connection, ensure_schema
 
 app = FastAPI()
 
@@ -54,7 +54,7 @@ def chat(req: ChatRequest, engine: SimilarityEngine = Depends(get_engine)):
         reply = render_comparison_reply(comparison)
 
     else:
-        reply = "I’m not sure what to do with that yet."
+        reply = "Iï¿½m not sure what to do with that yet."
         results = None
 
     return ChatResponse(

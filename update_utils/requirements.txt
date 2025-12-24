@@ -13,4 +13,6 @@ ultralytics
 pytesseract
 openai
 replicate
+psycopg2-binary
+authlib
 

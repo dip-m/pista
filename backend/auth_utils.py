@@ -2,13 +2,20 @@
 import hashlib
 import secrets
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, Any
 import jwt
+import requests
+from backend.config import (
+    JWT_SECRET_KEY, JWT_ALGORITHM, JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
+    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+    MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET,
+    META_CLIENT_ID, META_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI, MICROSOFT_REDIRECT_URI, META_REDIRECT_URI
+)
 
-# Simple secret key - in production, use environment variable
-SECRET_KEY = secrets.token_urlsafe(32)
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+SECRET_KEY = JWT_SECRET_KEY
+ALGORITHM = JWT_ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = JWT_ACCESS_TOKEN_EXPIRE_MINUTES
 
 
 def hash_password(password: str) -> str:
@@ -49,4 +56,60 @@ def decode_access_token(token: str) -> Optional[dict]:
         return None
     except jwt.InvalidTokenError:
         return None
+
+
+def verify_google_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verify Google OAuth token and return user info."""
+    try:
+        response = requests.get(
+            f"https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "oauth_id": data.get("id"),
+                "email": data.get("email"),
+                "username": data.get("name") or data.get("email"),
+            }
+    except Exception:
+        pass
+    return None
+
+
+def verify_microsoft_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verify Microsoft OAuth token and return user info."""
+    try:
+        response = requests.get(
+            "https://graph.microsoft.com/v1.0/me",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "oauth_id": data.get("id"),
+                "email": data.get("userPrincipalName") or data.get("mail"),
+                "username": data.get("displayName") or data.get("userPrincipalName"),
+            }
+    except Exception:
+        pass
+    return None
+
+
+def verify_meta_token(token: str) -> Optional[Dict[str, Any]]:
+    """Verify Meta (Facebook) OAuth token and return user info."""
+    try:
+        response = requests.get(
+            f"https://graph.facebook.com/me?fields=id,name,email&access_token={token}"
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "oauth_id": data.get("id"),
+                "email": data.get("email"),
+                "username": data.get("name") or data.get("email"),
+            }
+    except Exception:
+        pass
+    return None
 

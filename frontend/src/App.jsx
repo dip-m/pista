@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, Link } from "react-router-dom";
+import { GoogleOAuthProvider } from '@react-oauth/google';
+import { MsalProvider } from '@azure/msal-react';
+import { msalInstance } from './config/msalConfig';
 import PistaChat from "./components/features/PistaChat";
 import Profile from "./components/features/Profile";
 import Login from "./components/features/Login";
@@ -47,9 +50,10 @@ function App() {
     setLoading(false);
   };
 
-  const handleLogin = async () => {
+  const handleLogin = async (isNewUser = false) => {
     const userData = await authService.getCurrentUser();
     setUser(userData);
+    // If new user (no username set), they'll be redirected to profile by the route logic
   };
 
   // Callback to update user when BGG ID changes
@@ -69,9 +73,15 @@ function App() {
     return <div className="loading-screen">Loading...</div>;
   }
 
+  const googleClientId = process.env.REACT_APP_GOOGLE_CLIENT_ID || '';
+
+  // Always render GoogleOAuthProvider (required for useGoogleLogin hook)
+  // Use placeholder if no client ID is configured - button will be hidden in Login component
   return (
-    <Router>
-      <div className="App">
+    <GoogleOAuthProvider clientId={googleClientId || 'placeholder-for-hook-compatibility'}>
+      <MsalProvider instance={msalInstance}>
+        <Router>
+          <div className="App">
         <nav className="app-nav">
           <div className="nav-brand">
             <Link to="/">Pista</Link>
@@ -96,7 +106,7 @@ function App() {
                   {darkMode ? "☀️" : "🌙"}
                 </button>
                 <button onClick={handleLogout} className="logout-button">
-                  Logout ({user.username})
+                  Logout ({user.email || user.username || "User"})
                 </button>
               </>
             ) : (
@@ -119,7 +129,12 @@ function App() {
             path="/login"
             element={
               user ? (
-                <Navigate to="/" replace />
+                // Redirect based on whether user has set a username
+                (user.username && user.username !== user.email) ? (
+                  <Navigate to="/" replace />
+                ) : (
+                  <Navigate to="/profile" replace />
+                )
               ) : (
                 <Login onLogin={handleLogin} />
               )
@@ -127,7 +142,18 @@ function App() {
           />
           <Route
             path="/"
-            element={<PistaChat user={user} />}
+            element={
+              user ? (
+                // First-time users (no username or username equals email) should go to profile
+                (!user.username || user.username === user.email) ? (
+                  <Navigate to="/profile" replace />
+                ) : (
+                  <PistaChat user={user} />
+                )
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
           />
           <Route
             path="/profile"
@@ -171,8 +197,10 @@ function App() {
           />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </div>
-    </Router>
+          </div>
+        </Router>
+      </MsalProvider>
+    </GoogleOAuthProvider>
   );
 }
 

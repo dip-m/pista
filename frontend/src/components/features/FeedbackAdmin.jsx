@@ -1,5 +1,5 @@
 // frontend/src/components/features/FeedbackAdmin.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
@@ -15,11 +15,7 @@ function FeedbackAdmin({ user }) {
   const [options, setOptions] = useState([""]);
   const [showAddForm, setShowAddForm] = useState(false);
 
-  useEffect(() => {
-    loadQuestions();
-  }, []);
-
-  const loadQuestions = async () => {
+  const loadQuestions = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/admin/feedback/questions`, {
@@ -37,7 +33,11 @@ function FeedbackAdmin({ user }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [navigate]);
+
+  useEffect(() => {
+    loadQuestions();
+  }, [loadQuestions]);
 
   const handleAddOption = () => {
     setOptions([...options, ""]);

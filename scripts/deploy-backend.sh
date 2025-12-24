@@ -39,8 +39,8 @@ python -c "from db import ensure_schema, db_connection, DB_PATH; conn = db_conne
 # Start the server
 echo "Starting Pista backend server..."
 if [ "$ENVIRONMENT" = "production" ]; then
-    uvicorn main:app --host 0.0.0.0 --port ${API_PORT:-8000} --workers 4
+    uvicorn backend.main:app --host 0.0.0.0 --port ${API_PORT:-8000} --workers 4
 else
-    uvicorn main:app --host 0.0.0.0 --port ${API_PORT:-8000} --reload
+    uvicorn backend.main:app --host 0.0.0.0 --port ${API_PORT:-8000} --reload
 fi
 

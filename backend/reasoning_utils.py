@@ -1,12 +1,14 @@
 import sqlite3
 import math
 import logging
-from typing import Dict, Set, List, Tuple, Optional
+from typing import Dict, Set, List, Tuple, Optional, Any
+
+from .db import execute_query, DB_TYPE
 
 logger = logging.getLogger(__name__)
 
 
-def _fetch_name(conn: sqlite3.Connection, game_id: int) -> str:
+def _fetch_name(conn, game_id: int) -> str:
     if game_id is None:
         raise ValueError("game_id cannot be None")
     try:
@@ -15,16 +17,16 @@ def _fetch_name(conn: sqlite3.Connection, game_id: int) -> str:
         raise ValueError(f"game_id must be an integer, got {type(game_id)}: {game_id}")
     
     try:
-        cur = conn.execute("SELECT name FROM games WHERE id = ?", (game_id,))
+        cur = execute_query(conn, "SELECT name FROM games WHERE id = ?", (game_id,))
         row = cur.fetchone()
         return row[0] if row else f"(id={game_id})"
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"SQL error fetching name for game_id={game_id}: {e}")
         return f"(id={game_id})"
 
 
 def _fetch_feature_names(
-    conn: sqlite3.Connection,
+    conn,
     game_id: int,
     join_table: str,
     vocab_table: str,
@@ -44,14 +46,14 @@ def _fetch_feature_names(
                    JOIN {join_table} j ON j.{join_col_vocab} = v.id
                    WHERE j.{join_col_game} = ?
                    ORDER BY v.name"""
-        cur = conn.execute(sql, (game_id,))
+        cur = execute_query(conn, sql, (game_id,))
         return {row[0] for row in cur.fetchall()}
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"SQL error in _fetch_feature_names for game_id={game_id}, table={vocab_table}: {e}")
         return set()
 
 
-def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, object]:
+def get_game_features(conn, game_id: int) -> Dict[str, object]:
     # Validate game_id
     if game_id is None:
         raise ValueError("game_id cannot be None")
@@ -69,10 +71,10 @@ def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, objec
                        JOIN {join_table} j ON j.{join_vocab_col} = v.id
                        WHERE j.game_id = ?
                        ORDER BY v.name"""
-            cur = conn.execute(sql, (game_id,))
+            cur = execute_query(conn, sql, (game_id,))
             # Filter out None values and empty strings
             return {row[0] for row in cur.fetchall() if row[0] is not None and row[0].strip()}
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"SQL error fetching {vocab_table} for game_id={game_id}: {e}")
             return set()  # Return empty set on error
 
@@ -84,7 +86,8 @@ def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, objec
     publishers = fetch("game_publishers", "publishers", "publisher_id")
     
     # Apply feature modifications from FeatureMod table
-    cur = conn.execute(
+    cur = execute_query(
+        conn,
         """SELECT feature_type, feature_id, action 
            FROM feature_mods 
            WHERE game_id = ? 
@@ -115,7 +118,7 @@ def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, objec
         table_name, feature_set = feature_tables[feature_type]
         
         # Get feature name
-        cur = conn.execute(f"SELECT name FROM {table_name} WHERE id = ?", (feature_id,))
+        cur = execute_query(conn, f"SELECT name FROM {table_name} WHERE id = ?", (feature_id,))
         row = cur.fetchone()
         if row:
             feature_name = row[0]
@@ -125,7 +128,8 @@ def get_game_features(conn: sqlite3.Connection, game_id: int) -> Dict[str, objec
                 feature_set.discard(feature_name)
     
     # Get player count info from games table and polls_json
-    cur = conn.execute(
+    cur = execute_query(
+        conn,
         "SELECT min_players, max_players, polls_json FROM games WHERE id = ?",
         (game_id,)
     )
@@ -188,7 +192,7 @@ def jaccard(a: Set[str], b: Set[str]) -> float:
     return len(inter) / len(union) if union else 0.0
 
 
-def get_feature_rarity_weights(conn: sqlite3.Connection, feature_type: str) -> Dict[str, float]:
+def get_feature_rarity_weights(conn, feature_type: str) -> Dict[str, float]:
     """Calculate rarity weights for features. Rarer features get higher weights."""
     # Map feature types to their tables
     table_map = {
@@ -206,11 +210,12 @@ def get_feature_rarity_weights(conn: sqlite3.Connection, feature_type: str) -> D
     join_table, join_col, vocab_table = table_map[feature_type]
     
     # Get total number of games
-    cur = conn.execute("SELECT COUNT(DISTINCT id) FROM games")
+    cur = execute_query(conn, "SELECT COUNT(DISTINCT id) FROM games")
     total_games = cur.fetchone()[0] or 1
     
     # Get frequency of each feature
-    cur = conn.execute(
+    cur = execute_query(
+        conn,
         f"""SELECT v.name, COUNT(DISTINCT j.game_id) as count
            FROM {vocab_table} v
            JOIN {join_table} j ON j.{join_col} = v.id
@@ -234,7 +239,7 @@ def get_feature_rarity_weights(conn: sqlite3.Connection, feature_type: str) -> D
     return weights
 
 
-def compute_meta_similarity(f1: Dict[str, object], f2: Dict[str, object], conn: Optional[sqlite3.Connection] = None, use_rarity_weighting: bool = False) -> Tuple[float, Dict[str, List[str]], Dict[str, float]]:
+def compute_meta_similarity(f1: Dict[str, object], f2: Dict[str, object], conn: Optional[Any] = None, use_rarity_weighting: bool = False) -> Tuple[float, Dict[str, List[str]], Dict[str, float]]:
     mech1, mech2 = f1["mechanics"], f2["mechanics"]
     cat1, cat2 = f1["categories"], f2["categories"]
     fam1, fam2 = f1["families"], f2["families"]

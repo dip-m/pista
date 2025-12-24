@@ -5,7 +5,7 @@ import sqlite3
 
 import faiss
 
-from db import db_connection, ensure_schema
+from .db import db_connection, ensure_schema
 from backend.similarity_engine import SimilarityEngine
 
 

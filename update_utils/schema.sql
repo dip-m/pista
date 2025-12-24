@@ -115,13 +115,19 @@ CREATE TABLE IF NOT EXISTS game_embeddings (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    username    TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    bgg_id      TEXT,
-    is_admin    INTEGER DEFAULT 0,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    email          TEXT UNIQUE,
+    username       TEXT,
+    oauth_provider TEXT,  -- 'google', 'microsoft', 'meta', 'email'
+    oauth_id       TEXT,  -- OAuth provider user ID
+    password_hash  TEXT,  -- Only for email-based auth
+    bgg_id         TEXT,
+    is_admin       INTEGER DEFAULT 0,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Create unique constraint on (oauth_provider, oauth_id) for SQLite
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth_unique ON users(oauth_provider, oauth_id) WHERE oauth_provider IS NOT NULL AND oauth_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS user_collections (
     user_id         INTEGER NOT NULL,

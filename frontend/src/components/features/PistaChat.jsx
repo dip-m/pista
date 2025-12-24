@@ -1170,7 +1170,6 @@ function PistaChat({ user }) {
               // Use functional update to get latest input state
               setInput((currentInput) => {
                 const trimmed = (currentInput || "").trim();
-                const featureText = featureValue + (trimmed ? ", " : "");
                 const newInput = trimmed + (trimmed ? ", " : "") + featureValue;
                 
                 // Add feature as required feature chip (without auto-requery)
@@ -1702,19 +1701,39 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
       {results
         .filter(r => r && r.game_id) // Filter out invalid results
         .map((r) => {
-          // Extract shared features from overlaps
+          // Extract features - use all features if available (feature-only search), otherwise use shared features (similarity search)
           const sharedFeatures = [];
-          if (r.shared_mechanics) {
-            r.shared_mechanics.forEach(m => sharedFeatures.push({ type: "mechanics", value: m }));
-          }
-          if (r.shared_categories) {
-            r.shared_categories.forEach(c => sharedFeatures.push({ type: "categories", value: c }));
-          }
-          if (r.shared_designers) {
-            r.shared_designers.forEach(d => sharedFeatures.push({ type: "designers", value: d }));
-          }
-          if (r.shared_families) {
-            r.shared_families.forEach(f => sharedFeatures.push({ type: "families", value: f }));
+          // Check if this is a feature-only search result (has all features, not shared)
+          const hasAllFeatures = r.mechanics || r.categories || r.designers_list || r.families;
+          
+          if (hasAllFeatures) {
+            // Feature-only search: use all features
+            if (r.mechanics) {
+              r.mechanics.forEach(m => sharedFeatures.push({ type: "mechanics", value: m }));
+            }
+            if (r.categories) {
+              r.categories.forEach(c => sharedFeatures.push({ type: "categories", value: c }));
+            }
+            if (r.designers_list) {
+              r.designers_list.forEach(d => sharedFeatures.push({ type: "designers", value: d }));
+            }
+            if (r.families) {
+              r.families.forEach(f => sharedFeatures.push({ type: "families", value: f }));
+            }
+          } else {
+            // Similarity search: use shared features
+            if (r.shared_mechanics) {
+              r.shared_mechanics.forEach(m => sharedFeatures.push({ type: "mechanics", value: m }));
+            }
+            if (r.shared_categories) {
+              r.shared_categories.forEach(c => sharedFeatures.push({ type: "categories", value: c }));
+            }
+            if (r.shared_designers) {
+              r.shared_designers.forEach(d => sharedFeatures.push({ type: "designers", value: d }));
+            }
+            if (r.shared_families) {
+              r.shared_families.forEach(f => sharedFeatures.push({ type: "families", value: f }));
+            }
           }
           
           // Check if this game is unique to this variant (for highlighting)
@@ -1761,14 +1780,18 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
                         📅 {r.year_published}
                       </span>
                     )}
-                    <span>
-                      Similarity:{" "}
-                      {r.final_score !== undefined && r.final_score !== null
-                        ? r.final_score.toFixed(2)
-                        : (r.embedding_similarity !== undefined && r.embedding_similarity !== null
-                            ? r.embedding_similarity.toFixed(2)
-                            : "N/A")}
-                    </span>
+                    {/* Only show similarity score if it exists (not for feature-only search) */}
+                    {(r.final_score !== undefined && r.final_score !== null) || 
+                     (r.embedding_similarity !== undefined && r.embedding_similarity !== null) ? (
+                      <span>
+                        Similarity:{" "}
+                        {r.final_score !== undefined && r.final_score !== null
+                          ? r.final_score.toFixed(2)
+                          : (r.embedding_similarity !== undefined && r.embedding_similarity !== null
+                              ? r.embedding_similarity.toFixed(2)
+                              : "N/A")}
+                      </span>
+                    ) : null}
                     {r.average_rating && (
                       <span style={{ marginLeft: "1rem" }}>
                         ⭐ {typeof r.average_rating === 'number' ? r.average_rating.toFixed(1) : r.average_rating}

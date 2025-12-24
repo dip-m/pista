@@ -1,32 +1,50 @@
 # backend/app/main.py
-from typing import Dict, Any, Optional, Set, List
-
+from typing import Dict, Any, Optional, Set, List, Union
 import json
 import sqlite3
 from datetime import datetime
+
+# Try to import psycopg2 for type hints
+try:
+    import psycopg2
+    from psycopg2.extensions import connection as psycopg2_connection
+except ImportError:
+    psycopg2 = None
+    psycopg2_connection = None
 
 import faiss
 from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
-from db import db_connection, DB_PATH, ensure_schema
+from .db import db_connection, DB_PATH, ensure_schema, DB_TYPE, DATABASE_URL, get_connection, put_connection, execute_query
+# Import psycopg2 errors for PostgreSQL error handling
+try:
+    import psycopg2
+    import psycopg2.errors
+except ImportError:
+    psycopg2 = None
+
 from backend.chat_nlu import interpret_message
 from backend.similarity_engine import SimilarityEngine
 from fastapi.middleware.cors import CORSMiddleware
 from update_utils.export_name_id_map import get_name_id_map
-# backend/app/main.py (add near top)
 from backend.reasoning_utils import get_game_features, compute_meta_similarity, build_reason_summary
-from backend.auth_utils import hash_password, verify_password, create_access_token, decode_access_token
+from backend.auth_utils import (
+    hash_password, verify_password, create_access_token, decode_access_token,
+    verify_google_token, verify_microsoft_token, verify_meta_token
+)
 from backend.logger_config import logger
 from backend.bgg_collection import fetch_user_collection
 from backend.image_processing import analyze_image, generate_prompt_from_analysis, generate_image
 from backend.cache import get_cached, set_cached
 
 import os
-BASE_DIR = os.path.dirname(__file__)
+# BASE_DIR is now one level up since main.py is in backend/
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 index_path = os.path.join(BASE_DIR, "gen", "game_vectors.index")
 SCHEMA_FILE = os.path.join(BASE_DIR, "update_utils", "schema.sql")
+SCHEMA_FILE_POSTGRES = os.path.join(BASE_DIR, "update_utils", "schema_postgres.sql")
 
 
 app = FastAPI(title="Pista Service")
@@ -52,7 +70,10 @@ app.add_middleware(
 
 # Globals for demo; for production you'd handle lifecycle more carefully.
 ENGINE: Optional[SimilarityEngine] = None
-ENGINE_CONN: Optional[sqlite3.Connection] = None
+if psycopg2_connection:
+    ENGINE_CONN: Optional[Union[sqlite3.Connection, psycopg2_connection]] = None
+else:
+    ENGINE_CONN: Optional[sqlite3.Connection] = None
 
 
 class ChatRequest(BaseModel):
@@ -86,24 +107,34 @@ class ChatResponse(BaseModel):
     ab_responses: Optional[List[Dict[str, Any]]] = None
 
 
+class UsernameUpdateRequest(BaseModel):
+    username: str
+
 class BggIdUpdateRequest(BaseModel):
     bgg_id: Optional[str] = None
 
 
-class RegisterRequest(BaseModel):
-    username: str
+class OAuthCallbackRequest(BaseModel):
+    provider: str  # 'google', 'microsoft', 'meta'
+    token: str
+    email: Optional[str] = None
+    name: Optional[str] = None
+
+
+class EmailLoginRequest(BaseModel):
+    email: str
     password: str
-    bgg_id: Optional[str] = None
 
 
-class LoginRequest(BaseModel):
-    username: str
+class EmailRegisterRequest(BaseModel):
+    email: str
     password: str
 
 
 class UserResponse(BaseModel):
     id: int
-    username: str
+    email: Optional[str] = None
+    username: Optional[str] = None
     bgg_id: Optional[str] = None
     is_admin: bool = False
     
@@ -162,17 +193,34 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
         if user_id is None:
             return None
         
-        # Verify user exists
-        cur = ENGINE_CONN.execute("SELECT id, username, bgg_id, is_admin FROM users WHERE id = ?", (int(user_id),))
+        # Verify user exists - use execute_query for compatibility
+        query = "SELECT id, email, username, bgg_id, is_admin FROM users WHERE id = ?"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query, (int(user_id),))
         user = cur.fetchone()
         if user is None:
             return None
-        return {
-            "id": user[0], 
-            "username": user[1], 
-            "bgg_id": user[2] if len(user) > 2 else None,
-            "is_admin": bool(user[3] if len(user) > 3 else 0)
-        }
+        
+        # Handle both SQLite Row and PostgreSQL tuple
+        if hasattr(user, 'keys'):
+            # SQLite Row
+            return {
+                "id": user[0], 
+                "email": user[1] if len(user) > 1 else None,
+                "username": user[2] if len(user) > 2 else None,
+                "bgg_id": user[3] if len(user) > 3 else None,
+                "is_admin": bool(user[4] if len(user) > 4 else 0)
+            }
+        else:
+            # PostgreSQL tuple
+            return {
+                "id": user[0], 
+                "email": user[1] if len(user) > 1 else None,
+                "username": user[2] if len(user) > 2 else None,
+                "bgg_id": user[3] if len(user) > 3 else None,
+                "is_admin": bool(user[4] if len(user) > 4 else False)
+            }
     except Exception as e:
         logger.debug(f"Error getting current user: {e}", exc_info=True)
         return None
@@ -190,9 +238,15 @@ def get_current_admin_user(credentials: Optional[HTTPAuthorizationCredentials] =
     """Get current admin user from JWT token. Raises exception if not authenticated or not admin."""
     user = get_current_user_required(credentials)
     # Check if user is admin in database (token might be stale)
-    cur = ENGINE_CONN.execute("SELECT is_admin FROM users WHERE id = ?", (user["id"],))
+    query = "SELECT is_admin FROM users WHERE id = ?"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    cur = execute_query(ENGINE_CONN, query, (user["id"],))
     row = cur.fetchone()
-    if not row or not row[0]:
+    if not row:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    is_admin = row[0] if isinstance(row[0], bool) else bool(row[0])
+    if not is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return user
 
@@ -202,103 +256,223 @@ def load_user_collection(user_id: str) -> Set[int]:
     if not ENGINE_CONN:
         return set()
     try:
-        cur = ENGINE_CONN.execute(
-            "SELECT game_id FROM user_collections WHERE user_id = ?",
-            (int(user_id),)
-        )
+        query = "SELECT game_id FROM user_collections WHERE user_id = ?"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query, (int(user_id),))
         return {row[0] for row in cur.fetchall()}
     except (ValueError, sqlite3.Error):
         return set()
+    except Exception as e:
+        # Handle PostgreSQL errors if psycopg2 is available
+        if psycopg2 and hasattr(psycopg2, 'Error') and isinstance(e, psycopg2.Error):
+            return set()
+        raise
 
 
 @app.on_event("startup")
 def on_startup() -> None:
     global ENGINE, ENGINE_CONN
-    logger.info("Starting Pista service...")
-    ENGINE_CONN = sqlite3.connect(DB_PATH, check_same_thread=False)
-    ENGINE_CONN.row_factory = sqlite3.Row
-    ensure_schema(ENGINE_CONN, SCHEMA_FILE)
-    logger.info("Database schema ensured")
-    
-    # Migrate bgg_id column from INTEGER to TEXT if needed
-    # SQLite doesn't support DROP COLUMN, so we use a workaround
     try:
-        cur = ENGINE_CONN.execute("PRAGMA table_info(users)")
-        columns = {row[1]: row[2] for row in cur.fetchall()}
-        if 'bgg_id' in columns and columns['bgg_id'].upper() == 'INTEGER':
-            logger.info("Migrating bgg_id column from INTEGER to TEXT")
-            # Create new table with TEXT column
-            ENGINE_CONN.execute("""
-                CREATE TABLE users_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    bgg_id TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            # Copy data, converting INTEGER to TEXT
-            ENGINE_CONN.execute("""
-                INSERT INTO users_new (id, username, password_hash, bgg_id, created_at)
-                SELECT id, username, password_hash, 
-                       CASE WHEN bgg_id IS NOT NULL THEN CAST(bgg_id AS TEXT) ELSE NULL END,
-                       created_at
-                FROM users
-            """)
-            # Drop old table and rename new one
-            ENGINE_CONN.execute("DROP TABLE users")
-            ENGINE_CONN.execute("ALTER TABLE users_new RENAME TO users")
-            ENGINE_CONN.commit()
-            logger.info("Migration complete")
-    except sqlite3.Error as e:
-        logger.warning(f"Migration check failed (may already be migrated): {e}")
-    
-    # Add is_admin column if it doesn't exist
-    try:
-        cur = ENGINE_CONN.execute("PRAGMA table_info(users)")
-        columns = {row[1]: row[2] for row in cur.fetchall()}
-        if 'is_admin' not in columns:
-            logger.info("Adding is_admin column to users table")
-            ENGINE_CONN.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
-            ENGINE_CONN.commit()
-    except sqlite3.Error as e:
-        logger.warning(f"Error adding is_admin column (may already exist): {e}")
-    
-    # Create admin user if it doesn't exist
-    try:
-        from backend.auth_utils import hash_password
-        cur = ENGINE_CONN.execute("SELECT id FROM users WHERE username = ?", ("admin",))
-        admin_user = cur.fetchone()
-        if not admin_user:
-            logger.info("Creating admin user")
-            admin_password_hash = hash_password("admin")
-            ENGINE_CONN.execute(
-                "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
-                ("admin", admin_password_hash, 1)
-            )
-            ENGINE_CONN.commit()
-            logger.info("Admin user created: username=admin, password=admin")
+        logger.info("Starting Pista service...")
+        
+        # Initialize database connection
+        if DB_TYPE == "postgres" and DATABASE_URL:
+            logger.info("Connecting to PostgreSQL database...")
+            try:
+                ENGINE_CONN = get_connection()
+                SCHEMA_FILE_POSTGRES = os.path.join(BASE_DIR, "update_utils", "schema_postgres.sql")
+                ensure_schema(ENGINE_CONN, SCHEMA_FILE_POSTGRES)
+                logger.info("PostgreSQL schema ensured")
+            except Exception as db_err:
+                raise
         else:
-            # Ensure existing admin user has is_admin=1
-            ENGINE_CONN.execute(
-                "UPDATE users SET is_admin = 1 WHERE username = ?",
-                ("admin",)
-            )
-            ENGINE_CONN.commit()
-    except sqlite3.Error as e:
-        logger.warning(f"Error creating/updating admin user: {e}")
+            logger.info("Connecting to SQLite database...")
+            try:
+                ENGINE_CONN = sqlite3.connect(DB_PATH, check_same_thread=False)
+                ENGINE_CONN.row_factory = sqlite3.Row
+            except Exception as db_err:
+                raise
+        
+        # Run migration FIRST for SQLite (before ensure_schema)
+        # This ensures old databases are migrated before schema is applied
+        # Only run SQLite-specific migration code if using SQLite
+        # CRITICAL: Re-check DB_TYPE from environment at runtime to ensure it's correct
+        # The module-level DB_TYPE might have been set to "sqlite" at import time
+        # before environment variables were loaded
+        runtime_db_type = os.getenv("DB_TYPE", DB_TYPE)
+        if runtime_db_type == "sqlite":
+            try:
+                # Check if users table exists (SQLite-specific query)
+                cur = execute_query(ENGINE_CONN, "SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+                table_exists = cur.fetchone() is not None
+                
+                if table_exists:
+                    cur = execute_query(ENGINE_CONN, "PRAGMA table_info(users)")
+                    columns = {row[1]: row[2] for row in cur.fetchall()}
+                else:
+                    columns = {}  # Table doesn't exist, will be created by ensure_schema
+                
+                # Migrate to OAuth-compatible schema if needed
+                needs_oauth_migration = 'email' not in columns or 'oauth_provider' not in columns
+                migration_completed = False
+                
+                if needs_oauth_migration and table_exists:
+                    logger.info("Migrating users table to OAuth-compatible schema")
+                    
+                    # Clean up any leftover users_new table from previous failed migration
+                    cur = execute_query(ENGINE_CONN, "SELECT name FROM sqlite_master WHERE type='table' AND name='users_new'")
+                    if cur.fetchone():
+                        logger.info("Cleaning up leftover users_new table from previous migration")
+                        execute_query(ENGINE_CONN, "DROP TABLE IF EXISTS users_new")
+                        ENGINE_CONN.commit()
+                
+                # Create new table with OAuth columns
+                execute_query(ENGINE_CONN, """
+                    CREATE TABLE users_new (
+                        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                        email          TEXT UNIQUE,
+                        username       TEXT,
+                        oauth_provider TEXT,
+                        oauth_id       TEXT,
+                        password_hash  TEXT,
+                        bgg_id         TEXT,
+                        is_admin       INTEGER DEFAULT 0,
+                        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Create unique index for OAuth provider/id combination
+                execute_query(ENGINE_CONN, """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth_unique 
+                    ON users_new(oauth_provider, oauth_id) 
+                    WHERE oauth_provider IS NOT NULL AND oauth_id IS NOT NULL
+                """)
+                
+                # Migrate existing users to email provider
+                # Check if we have old-style users (username, password_hash, no email)
+                if 'username' in columns and 'password_hash' in columns:
+                    logger.info("Migrating existing users to email-based auth")
+                    execute_query(ENGINE_CONN, """
+                        INSERT INTO users_new (id, email, username, oauth_provider, password_hash, bgg_id, is_admin, created_at)
+                        SELECT 
+                            id,
+                            CASE 
+                                WHEN username LIKE '%@%' THEN username 
+                                ELSE username || '@migrated.local' 
+                            END as email,
+                            username,
+                            'email' as oauth_provider,
+                            password_hash,
+                            bgg_id,
+                            COALESCE(is_admin, 0) as is_admin,
+                            COALESCE(created_at, CURRENT_TIMESTAMP) as created_at
+                        FROM users
+                    """)
+                else:
+                    # Table exists but might be empty or partially migrated
+                    logger.info("Users table structure updated, no data to migrate")
+                
+                # Drop old table and rename new one
+                execute_query(ENGINE_CONN, "DROP TABLE IF EXISTS users")
+                execute_query(ENGINE_CONN, "ALTER TABLE users_new RENAME TO users")
+                ENGINE_CONN.commit()
+                logger.info("OAuth migration complete")
+                
+                # Re-fetch columns to verify migration
+                cur = execute_query(ENGINE_CONN, "PRAGMA table_info(users)")
+                columns = {row[1]: row[2] for row in cur.fetchall()}
+                logger.info(f"Migration verified. Users table now has columns: {list(columns.keys())}")
+                migration_completed = True
+                
+                # Add individual columns if missing (for incremental updates)
+                # Only if full migration didn't run
+                if table_exists and not migration_completed and 'email' not in columns:
+                    logger.info("Adding email column to users table")
+                    execute_query(ENGINE_CONN, "ALTER TABLE users ADD COLUMN email TEXT")
+                    ENGINE_CONN.commit()
+                
+                if table_exists and not migration_completed and 'oauth_provider' not in columns:
+                    logger.info("Adding oauth_provider column to users table")
+                    execute_query(ENGINE_CONN, "ALTER TABLE users ADD COLUMN oauth_provider TEXT")
+                    ENGINE_CONN.commit()
+                
+                if table_exists and not migration_completed and 'oauth_id' not in columns:
+                    logger.info("Adding oauth_id column to users table")
+                    execute_query(ENGINE_CONN, "ALTER TABLE users ADD COLUMN oauth_id TEXT")
+                    ENGINE_CONN.commit()
+                
+                # Migrate bgg_id column from INTEGER to TEXT if needed
+                if 'bgg_id' in columns and columns['bgg_id'].upper() == 'INTEGER':
+                    logger.info("Migrating bgg_id column from INTEGER to TEXT")
+                    logger.warning("bgg_id is INTEGER, should be TEXT. Consider running full migration.")
+                
+                # Add is_admin column if it doesn't exist
+                if 'is_admin' not in columns:
+                    logger.info("Adding is_admin column to users table")
+                    execute_query(ENGINE_CONN, "ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+                    ENGINE_CONN.commit()
+                    
+            except sqlite3.Error as e:
+                error_msg = str(e)
+                logger.error(f"Migration failed: {e}", exc_info=True)
+                # If migration failed, try to verify current state
+                try:
+                    cur = execute_query(ENGINE_CONN, "SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+                    if cur.fetchone():
+                        cur = execute_query(ENGINE_CONN, "PRAGMA table_info(users)")
+                        columns = {row[1]: row[2] for row in cur.fetchall()}
+                        if 'email' not in columns:
+                            logger.error("CRITICAL: Users table exists but missing email column. Migration must be completed manually.")
+                            logger.error("You may need to manually run the migration or recreate the database.")
+                        else:
+                            logger.info("Migration appears to have completed despite error message")
+                except Exception as verify_err:
+                    logger.error(f"Could not verify migration state: {verify_err}")
+            
+            # Now run ensure_schema after migration (SQLite only)
+            ensure_schema(ENGINE_CONN, SCHEMA_FILE)
+            logger.info("SQLite schema ensured")
+            
+            # Final verification: Ensure OAuth columns exist
+            try:
+                cur = execute_query(ENGINE_CONN, "SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+                if cur.fetchone():
+                    cur = execute_query(ENGINE_CONN, "PRAGMA table_info(users)")
+                    final_columns = {row[1]: row[2] for row in cur.fetchall()}
+                    if 'email' not in final_columns or 'oauth_provider' not in final_columns:
+                        logger.error("CRITICAL: OAuth migration incomplete. Users table missing required columns.")
+                        logger.error("Please run: python update_utils/fix_sqlite_oauth_schema.py --db-path gen/bgg_semantic.db")
+                        raise RuntimeError("Database schema migration incomplete. Cannot start server.")
+                    else:
+                        logger.info("✅ OAuth schema verification passed")
+            except RuntimeError:
+                raise  # Re-raise the critical error
+            except Exception as verify_err:
+                logger.warning(f"Could not verify final schema state: {verify_err}")
 
-    index = faiss.read_index(index_path)
-    id_map = load_id_map(os.path.join(BASE_DIR, "gen", "game_ids.json"))
-    ENGINE = SimilarityEngine(ENGINE_CONN, index, id_map)
-    logger.info(f"SimilarityEngine initialized with {len(id_map)} games")
+        # Load FAISS index and initialize similarity engine
+        try:
+            index = faiss.read_index(index_path)
+            id_map = load_id_map(os.path.join(BASE_DIR, "gen", "game_ids.json"))
+            ENGINE = SimilarityEngine(ENGINE_CONN, index, id_map)
+            logger.info(f"SimilarityEngine initialized with {len(id_map)} games")
+        except Exception as e:
+            logger.error(f"Failed to initialize SimilarityEngine: {e}")
+            ENGINE = None
+    except Exception as startup_err:
+        logger.error(f"Startup failed: {startup_err}", exc_info=True)
+        raise
 
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     global ENGINE_CONN
     if ENGINE_CONN is not None:
-        ENGINE_CONN.close()
+        if DB_TYPE == "postgres":
+            put_connection(ENGINE_CONN)
+        else:
+            ENGINE_CONN.close()
         ENGINE_CONN = None
 
 
@@ -390,27 +564,42 @@ def search_by_features_only(
         
         logger.debug(f"Feature-only search SQL: {sql[:200]}... with {len(params)} params")
         try:
-            cur = ENGINE_CONN.execute(sql, params)
-        except sqlite3.Error as e:
+            cur = execute_query(ENGINE_CONN, sql, tuple(params) if params else None)
+        except Exception as e:
             logger.error(f"SQL error in feature-only search: {e}, SQL: {sql}, params: {params}")
             return []
         results = []
         for row in cur.fetchall():
             game_id = row[0]
+            # Get all features for this game
+            from backend.reasoning_utils import get_game_features
+            try:
+                game_features = get_game_features(ENGINE_CONN, game_id)
+            except Exception as e:
+                logger.warning(f"Error getting features for game {game_id}: {e}")
+                game_features = {}
+            
             # Get designers for this game
             designers = []
             try:
-                cur_d = ENGINE_CONN.execute(
+                cur_d = execute_query(
+                    ENGINE_CONN,
                     """SELECT d.name FROM designers d
                        JOIN game_designers gd ON gd.designer_id = d.id
                        WHERE gd.game_id = ? ORDER BY d.name""",
                     (game_id,)
                 )
                 designers = [r[0] for r in cur_d.fetchall()]
-            except sqlite3.Error:
+            except Exception:
                 pass
             
             # Row structure: id, name, year_published, thumbnail, average_rating, num_ratings, min_players, max_players, description
+            # Get all features as lists (not sets) for JSON serialization
+            all_mechanics = list(game_features.get("mechanics", []))
+            all_categories = list(game_features.get("categories", []))
+            all_designers = list(game_features.get("designers", []))
+            all_families = list(game_features.get("families", []))
+            
             results.append({
                 "game_id": game_id,
                 "name": row[1],
@@ -421,9 +610,12 @@ def search_by_features_only(
                 "min_players": row[6],
                 "max_players": row[7],
                 "description": row[8] if len(row) > 8 and row[8] else None,
-                "designers": designers,
-                "embedding_similarity": 0.0,  # No similarity score for feature-only search
-                "final_score": float(row[4]) if row[4] else 0.0,  # Use rating as score
+                "designers": designers,  # Keep for backward compatibility
+                # Return all features (not shared) for feature-only search
+                "mechanics": all_mechanics,
+                "categories": all_categories,
+                "designers_list": all_designers,  # Use designers_list to distinguish from designers (which is already used for display)
+                "families": all_families,
                 "reason_summary": "Found by matching required features"
             })
         
@@ -457,47 +649,104 @@ def compare_two_games(engine: SimilarityEngine, game_a_id: Any, game_b_id: Any) 
     }
 
 
-@app.post("/auth/register")
-def register(req: RegisterRequest):
-    """Register a new user."""
-    # Check if username exists
-    cur = ENGINE_CONN.execute("SELECT id FROM users WHERE username = ?", (req.username,))
-    if cur.fetchone():
-        raise HTTPException(status_code=400, detail="Username already exists")
+@app.post("/auth/oauth/callback")
+def oauth_callback(req: OAuthCallbackRequest):
+    """Handle OAuth callback from Google, Microsoft, or Meta."""
+    if req.provider not in ["google", "microsoft", "meta"]:
+        raise HTTPException(status_code=400, detail="Invalid OAuth provider")
     
-    # Sanitize BGG ID
-    bgg_id = req.bgg_id
-    if bgg_id:
-        if isinstance(bgg_id, str):
-            bgg_id = bgg_id.strip() or None
-        elif isinstance(bgg_id, int):
-            bgg_id = str(bgg_id).strip() or None
+    # Verify token and get user info
+    user_info = None
+    if req.provider == "google":
+        user_info = verify_google_token(req.token)
+    elif req.provider == "microsoft":
+        user_info = verify_microsoft_token(req.token)
+    elif req.provider == "meta":
+        user_info = verify_meta_token(req.token)
     
-    # Create user
-    password_hash = hash_password(req.password)
-    cur = ENGINE_CONN.execute(
-        "INSERT INTO users (username, password_hash, bgg_id) VALUES (?, ?, ?)",
-        (req.username, password_hash, bgg_id)
-    )
-    ENGINE_CONN.commit()
-    user_id = cur.lastrowid
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid OAuth token")
     
-    # Create access token
+    oauth_id = user_info.get("oauth_id")
+    email = user_info.get("email") or req.email
+    username = user_info.get("username") or req.name or email
+    
+    if not oauth_id:
+        raise HTTPException(status_code=400, detail="OAuth ID not found")
+    
+    # Check if user exists
+    query = "SELECT id, email, username, is_admin FROM users WHERE oauth_provider = ? AND oauth_id = ?"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    cur = execute_query(ENGINE_CONN, query, (req.provider, oauth_id))
+    user = cur.fetchone()
+    
+    is_new_user = False
+    if user:
+        # Existing user - login
+        user_id = user[0]
+        is_admin = user[3] if len(user) > 3 else False
+        if isinstance(is_admin, int):
+            is_admin = bool(is_admin)
+    else:
+        # New user - create account (username is NULL initially, user will set it in profile)
+        is_new_user = True
+        insert_query = """INSERT INTO users (email, username, oauth_provider, oauth_id) 
+                         VALUES (?, ?, ?, ?)"""
+        if DB_TYPE == "postgres":
+            insert_query = insert_query.replace("?", "%s") + " RETURNING id"
+            cur = execute_query(ENGINE_CONN, insert_query, (email, None, req.provider, oauth_id))
+            user_id = cur.fetchone()[0]
+        else:
+            cur = execute_query(ENGINE_CONN, insert_query, (email, None, req.provider, oauth_id))
+            user_id = cur.lastrowid
+        ENGINE_CONN.commit()
+        is_admin = False
+    
     access_token = create_access_token(data={"sub": str(user_id)})
+    return {"access_token": access_token, "token_type": "bearer", "user_id": user_id, "is_new_user": is_new_user}
+
+
+@app.post("/auth/email/register")
+def email_register(req: EmailRegisterRequest):
+    """Register a new user with email (restricted to email provider only)."""
+    # Check if email exists
+    query = "SELECT id FROM users WHERE email = ?"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    cur = execute_query(ENGINE_CONN, query, (req.email,))
+    if cur.fetchone():
+        raise HTTPException(status_code=400, detail="Email already exists")
     
+    # Create user with email provider - username is NULL initially, user will set it in profile
+    password_hash = hash_password(req.password)
+    if DB_TYPE == "postgres":
+        insert_query = """INSERT INTO users (email, username, oauth_provider, password_hash) 
+                         VALUES (%s, %s, 'email', %s) RETURNING id"""
+        cur = execute_query(ENGINE_CONN, insert_query, (req.email, None, password_hash))
+        user_id = cur.fetchone()[0]
+    else:
+        insert_query = """INSERT INTO users (email, username, oauth_provider, password_hash) 
+                         VALUES (?, ?, 'email', ?)"""
+        cur = execute_query(ENGINE_CONN, insert_query, (req.email, None, password_hash))
+        user_id = cur.lastrowid
+    ENGINE_CONN.commit()
+    
+    access_token = create_access_token(data={"sub": str(user_id)})
     return {"access_token": access_token, "token_type": "bearer", "user_id": user_id}
 
 
-@app.post("/auth/login")
-def login(req: LoginRequest):
-    """Login and get access token."""
-    cur = ENGINE_CONN.execute(
-        "SELECT id, password_hash, bgg_id FROM users WHERE username = ?",
-        (req.username,)
-    )
+@app.post("/auth/email/login")
+def email_login(req: EmailLoginRequest):
+    """Login with email and password."""
+    query = "SELECT id, password_hash, bgg_id, is_admin FROM users WHERE email = ? AND oauth_provider = 'email'"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    cur = execute_query(ENGINE_CONN, query, (req.email,))
     user = cur.fetchone()
+    
     if not user or not verify_password(req.password, user[1]):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+        raise HTTPException(status_code=401, detail="Invalid email or password")
     
     access_token = create_access_token(data={"sub": str(user[0])})
     return {"access_token": access_token, "token_type": "bearer", "user_id": user[0]}
@@ -514,15 +763,46 @@ def get_current_user_info(current_user: Optional[Dict[str, Any]] = Depends(get_c
         bgg_id = str(bgg_id)  # Convert to string if it's not already
     # Ensure is_admin is included
     if "is_admin" not in current_user:
-        cur = ENGINE_CONN.execute("SELECT is_admin FROM users WHERE id = ?", (current_user["id"],))
+        query = "SELECT is_admin FROM users WHERE id = ?"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query, (current_user["id"],))
         row = cur.fetchone()
-        current_user["is_admin"] = bool(row[0] if row else 0)
+        current_user["is_admin"] = bool(row[0] if row else False)
     return UserResponse(
         id=current_user["id"],
-        username=current_user["username"],
+        email=current_user.get("email"),
+        username=current_user.get("username"),
         bgg_id=bgg_id,
         is_admin=current_user.get("is_admin", False)
     )
+
+
+@app.put("/profile/username")
+def update_username(req: UsernameUpdateRequest, current_user: Dict[str, Any] = Depends(get_current_user_required)):
+    """Update user's username."""
+    # Validate and sanitize input
+    username = req.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username cannot be empty")
+    
+    # Check if username is already taken
+    query = "SELECT id FROM users WHERE username = ? AND id != ?"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    cur = execute_query(ENGINE_CONN, query, (username, current_user["id"]))
+    if cur.fetchone():
+        raise HTTPException(status_code=400, detail="Username already taken")
+    
+    logger.info(f"Updating username for user {current_user['id']} to {username}")
+    query = "UPDATE users SET username = ? WHERE id = ?"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    execute_query(ENGINE_CONN, query, (username, current_user["id"]))
+    ENGINE_CONN.commit()
+    
+    logger.info(f"Username updated successfully for user {current_user['id']}")
+    return {"success": True, "username": username}
 
 
 @app.put("/profile/bgg-id")
@@ -538,10 +818,10 @@ def update_bgg_id(req: BggIdUpdateRequest, current_user: Dict[str, Any] = Depend
         bgg_id = None
     
     logger.info(f"Updating BGG ID for user {current_user['id']} to {bgg_id}")
-    ENGINE_CONN.execute(
-        "UPDATE users SET bgg_id = ? WHERE id = ?",
-        (bgg_id, current_user["id"])
-    )
+    query = "UPDATE users SET bgg_id = ? WHERE id = ?"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    execute_query(ENGINE_CONN, query, (bgg_id, current_user["id"]))
     ENGINE_CONN.commit()
     
     logger.info(f"BGG ID updated successfully for user {current_user['id']}")
@@ -558,16 +838,17 @@ def import_bgg_collection(current_user: Dict[str, Any] = Depends(get_current_use
     logger.info(f"Importing BGG collection for user {current_user['id']} (BGG ID: {current_user['bgg_id']})")
     
     try:
-        # Ensure personal_rating column exists
-        try:
-            cur = ENGINE_CONN.execute("PRAGMA table_info(user_collections)")
-            columns = [row[1] for row in cur.fetchall()]
-            if "personal_rating" not in columns:
-                ENGINE_CONN.execute("ALTER TABLE user_collections ADD COLUMN personal_rating REAL")
-                ENGINE_CONN.commit()
-                logger.info("Added personal_rating column to user_collections table")
-        except sqlite3.Error as e:
-            logger.warning(f"Error checking/adding personal_rating column: {e}")
+        # Ensure personal_rating column exists (SQLite only)
+        if DB_TYPE == "sqlite":
+            try:
+                cur = execute_query(ENGINE_CONN, "PRAGMA table_info(user_collections)")
+                columns = [row[1] for row in cur.fetchall()]
+                if "personal_rating" not in columns:
+                    execute_query(ENGINE_CONN, "ALTER TABLE user_collections ADD COLUMN personal_rating REAL")
+                    ENGINE_CONN.commit()
+                    logger.info("Added personal_rating column to user_collections table")
+            except sqlite3.Error as e:
+                logger.warning(f"Error checking/adding personal_rating column: {e}")
         
         games_data = fetch_user_collection(str(current_user["bgg_id"]))
         logger.info(f"Fetched {len(games_data)} games from BGG")
@@ -582,39 +863,44 @@ def import_bgg_collection(current_user: Dict[str, Any] = Depends(get_current_use
             personal_rating = game_data.get("personal_rating")
             
             # Check if game exists in DB
-            cur = ENGINE_CONN.execute("SELECT id FROM games WHERE id = ?", (game_id,))
+            query = "SELECT id FROM games WHERE id = ?"
+            if DB_TYPE == "postgres":
+                query = query.replace("?", "%s")
+            cur = execute_query(ENGINE_CONN, query, (game_id,))
             if not cur.fetchone():
                 logger.debug(f"Game {game_id} not found in local DB, skipping")
                 skipped_count += 1
                 continue
             
             # Check if already in collection
-            cur = ENGINE_CONN.execute(
-                "SELECT personal_rating FROM user_collections WHERE user_id = ? AND game_id = ?",
-                (current_user["id"], game_id)
-            )
+            query = "SELECT personal_rating FROM user_collections WHERE user_id = ? AND game_id = ?"
+            if DB_TYPE == "postgres":
+                query = query.replace("?", "%s")
+            cur = execute_query(ENGINE_CONN, query, (current_user["id"], game_id))
             existing = cur.fetchone()
             
             if existing:
                 # Update with new rating if provided
                 if personal_rating is not None:
                     try:
-                        ENGINE_CONN.execute(
-                            "UPDATE user_collections SET personal_rating = ? WHERE user_id = ? AND game_id = ?",
-                            (personal_rating, current_user["id"], game_id)
-                        )
+                        query = "UPDATE user_collections SET personal_rating = ? WHERE user_id = ? AND game_id = ?"
+                        if DB_TYPE == "postgres":
+                            query = query.replace("?", "%s")
+                        execute_query(ENGINE_CONN, query, (personal_rating, current_user["id"], game_id))
+                        ENGINE_CONN.commit()
                         updated_count += 1
-                    except sqlite3.Error as e:
+                    except Exception as e:
                         logger.warning(f"Error updating game {game_id} rating: {e}")
             else:
                 # Add to collection with rating
                 try:
-                    ENGINE_CONN.execute(
-                        "INSERT INTO user_collections (user_id, game_id, personal_rating) VALUES (?, ?, ?)",
-                        (current_user["id"], game_id, personal_rating)
-                    )
+                    query = "INSERT INTO user_collections (user_id, game_id, personal_rating) VALUES (?, ?, ?)"
+                    if DB_TYPE == "postgres":
+                        query = query.replace("?", "%s")
+                    execute_query(ENGINE_CONN, query, (current_user["id"], game_id, personal_rating))
+                    ENGINE_CONN.commit()
                     added_count += 1
-                except sqlite3.Error as e:
+                except Exception as e:
                     logger.warning(f"Error adding game {game_id} to collection: {e}")
                     skipped_count += 1
         
@@ -702,7 +988,7 @@ def search_games(q: str, limit: int = 10):
                      LIMIT ?"""
             params = tuple([f"%{word}%" for word in query_words for _ in range(5)] + [limit])
         
-        cur = ENGINE_CONN.execute(sql, params)
+        cur = execute_query(ENGINE_CONN, sql, params)
         game_results = []
         seen_ids = set()
         for row in cur.fetchall():
@@ -712,7 +998,8 @@ def search_games(q: str, limit: int = 10):
                 features = []
                 try:
                     # Get mechanics
-                    cur_m = ENGINE_CONN.execute(
+                    cur_m = execute_query(
+                        ENGINE_CONN,
                         """SELECT m.name FROM mechanics m
                            JOIN game_mechanics gm ON gm.mechanic_id = m.id
                            WHERE gm.game_id = ? LIMIT 3""",
@@ -723,7 +1010,8 @@ def search_games(q: str, limit: int = 10):
                     features.extend([("⚙️", m) for m in mechanics])
                     
                     # Get categories
-                    cur_c = ENGINE_CONN.execute(
+                    cur_c = execute_query(
+                        ENGINE_CONN,
                         """SELECT c.name FROM categories c
                            JOIN game_categories gc ON gc.category_id = c.id
                            WHERE gc.game_id = ? LIMIT 2""",
@@ -734,7 +1022,8 @@ def search_games(q: str, limit: int = 10):
                     features.extend([("🏷️", c) for c in categories])
                     
                     # Get designers
-                    cur_d = ENGINE_CONN.execute(
+                    cur_d = execute_query(
+                        ENGINE_CONN,
                         """SELECT d.name FROM designers d
                            JOIN game_designers gd ON gd.designer_id = d.id
                            WHERE gd.game_id = ? LIMIT 2""",
@@ -745,7 +1034,8 @@ def search_games(q: str, limit: int = 10):
                     features.extend([("👤", d) for d in designers])
                     
                     # Get publishers
-                    cur_p = ENGINE_CONN.execute(
+                    cur_p = execute_query(
+                        ENGINE_CONN,
                         """SELECT p.name FROM publishers p
                            JOIN game_publishers gp ON gp.publisher_id = p.id
                            WHERE gp.game_id = ? LIMIT 2""",
@@ -754,7 +1044,7 @@ def search_games(q: str, limit: int = 10):
                     publishers_rows = cur_p.fetchall() if cur_p else []
                     publishers = [r[0] for r in publishers_rows if len(r) > 0]
                     features.extend([("🏢", p) for p in publishers])
-                except sqlite3.Error as e:
+                except Exception as e:
                     logger.error(f"Error fetching features for game {game_id}: {e}")
                     pass
                 
@@ -777,7 +1067,8 @@ def search_games(q: str, limit: int = 10):
         
         # Search mechanics
         try:
-            cur_m = ENGINE_CONN.execute(
+            cur_m = execute_query(
+                ENGINE_CONN,
                 """SELECT DISTINCT id, name FROM mechanics 
                    WHERE LOWER(name) LIKE LOWER(?) 
                    ORDER BY name LIMIT ?""",
@@ -792,12 +1083,13 @@ def search_games(q: str, limit: int = 10):
                         "name": row[1],
                         "icon": "⚙️"
                     })
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"Error searching mechanics: {e}")
         
         # Search categories
         try:
-            cur_c = ENGINE_CONN.execute(
+            cur_c = execute_query(
+                ENGINE_CONN,
                 """SELECT DISTINCT id, name FROM categories 
                    WHERE LOWER(name) LIKE LOWER(?) 
                    ORDER BY name LIMIT ?""",
@@ -812,12 +1104,13 @@ def search_games(q: str, limit: int = 10):
                         "name": row[1],
                         "icon": "🏷️"
                     })
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"Error searching categories: {e}")
         
         # Search designers
         try:
-            cur_d = ENGINE_CONN.execute(
+            cur_d = execute_query(
+                ENGINE_CONN,
                 """SELECT DISTINCT id, name FROM designers 
                    WHERE LOWER(name) LIKE LOWER(?) 
                    ORDER BY name LIMIT ?""",
@@ -832,12 +1125,13 @@ def search_games(q: str, limit: int = 10):
                         "name": row[1],
                         "icon": "👤"
                     })
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"Error searching designers: {e}")
         
         # Search publishers
         try:
-            cur_p = ENGINE_CONN.execute(
+            cur_p = execute_query(
+                ENGINE_CONN,
                 """SELECT DISTINCT id, name FROM publishers 
                    WHERE LOWER(name) LIKE LOWER(?) 
                    ORDER BY name LIMIT ?""",
@@ -852,7 +1146,7 @@ def search_games(q: str, limit: int = 10):
                         "name": row[1],
                         "icon": "🏢"
                     })
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"Error searching publishers: {e}")
         
         result = {
@@ -865,7 +1159,7 @@ def search_games(q: str, limit: int = 10):
         set_cached(cache_key, result)
         logger.debug(f"Search: '{q}' returned {len(game_results)} games and {len(feature_results)} features")
         return result
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"Database error in search: {e}", exc_info=True)
         return {"games": [], "features": []}
 
@@ -898,25 +1192,27 @@ def get_collection(
     elif sort_by == "average_rating":
         order_by = f"g.average_rating {order.upper()}"
     
-    # Check if personal_rating column exists, if not use NULL
-    try:
-        cur = ENGINE_CONN.execute("PRAGMA table_info(user_collections)")
-        columns = [row[1] for row in cur.fetchall()]
-        has_personal_rating = "personal_rating" in columns
-    except:
-        has_personal_rating = False
+    # Check if personal_rating column exists, if not use NULL (SQLite only)
+    has_personal_rating = True  # Assume it exists in PostgreSQL
+    if DB_TYPE == "sqlite":
+        try:
+            cur = execute_query(ENGINE_CONN, "PRAGMA table_info(user_collections)")
+            columns = [row[1] for row in cur.fetchall()]
+            has_personal_rating = "personal_rating" in columns
+        except:
+            has_personal_rating = False
     
     personal_rating_col = "uc.personal_rating" if has_personal_rating else "NULL as personal_rating"
     
-    cur = ENGINE_CONN.execute(
-        f"""SELECT uc.game_id, g.name, g.year_published, g.thumbnail, uc.added_at,
+    query = f"""SELECT uc.game_id, g.name, g.year_published, g.thumbnail, uc.added_at,
                 g.average_rating, {personal_rating_col}
            FROM user_collections uc
            JOIN games g ON uc.game_id = g.id
            WHERE uc.user_id = ?
-           ORDER BY {order_by}""",
-        (current_user["id"],)
-    )
+           ORDER BY {order_by}"""
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    cur = execute_query(ENGINE_CONN, query, (current_user["id"],))
     collection = []
     for row in cur.fetchall():
         collection.append({
@@ -940,15 +1236,16 @@ def add_to_collection(req: AddToCollectionRequest, current_user: Dict[str, Any] 
     """Add a game to user's collection."""
     game_id = req.game_id
     # Verify game exists
-    cur = ENGINE_CONN.execute("SELECT id FROM games WHERE id = ?", (game_id,))
+    cur = execute_query(ENGINE_CONN, "SELECT id FROM games WHERE id = ?", (game_id,))
     if not cur.fetchone():
         raise HTTPException(status_code=404, detail="Game not found")
     
     # Add to collection (ignore if already exists)
-    ENGINE_CONN.execute(
-        "INSERT OR IGNORE INTO user_collections (user_id, game_id) VALUES (?, ?)",
-        (current_user["id"], game_id)
-    )
+    if DB_TYPE == "postgres":
+        insert_sql = "INSERT INTO user_collections (user_id, game_id) VALUES (%s, %s) ON CONFLICT DO NOTHING"
+    else:
+        insert_sql = "INSERT OR IGNORE INTO user_collections (user_id, game_id) VALUES (?, ?)"
+    execute_query(ENGINE_CONN, insert_sql, (current_user["id"], game_id))
     ENGINE_CONN.commit()
     logger.info(f"Added game {game_id} to collection for user {current_user['id']}")
     return {"success": True, "game_id": game_id}
@@ -957,12 +1254,13 @@ def add_to_collection(req: AddToCollectionRequest, current_user: Dict[str, Any] 
 @app.delete("/profile/collection/{game_id}")
 def remove_from_collection(game_id: int, current_user: Dict[str, Any] = Depends(get_current_user_required)):
     """Remove a game from user's collection."""
-    cur = ENGINE_CONN.execute(
-        "DELETE FROM user_collections WHERE user_id = ? AND game_id = ?",
-        (current_user["id"], game_id)
-    )
+    query = "DELETE FROM user_collections WHERE user_id = ? AND game_id = ?"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    cur = execute_query(ENGINE_CONN, query, (current_user["id"], game_id))
     ENGINE_CONN.commit()
-    if cur.rowcount == 0:
+    rowcount = cur.rowcount if hasattr(cur, 'rowcount') else (0 if not cur.fetchone() else 1)
+    if rowcount == 0:
         raise HTTPException(status_code=404, detail="Game not in collection")
     return {"success": True}
 
@@ -972,7 +1270,8 @@ def get_chat_history(current_user: Optional[Dict[str, Any]] = Depends(get_curren
     """Get list of chat threads for the user."""
     if current_user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
-    cur = ENGINE_CONN.execute(
+    cur = execute_query(
+        ENGINE_CONN,
         """SELECT id, title, created_at, updated_at
            FROM chat_threads
            WHERE user_id = ?
@@ -996,18 +1295,18 @@ def get_chat_thread(thread_id: int, current_user: Optional[Dict[str, Any]] = Dep
     if current_user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
     # Verify thread belongs to user
-    cur = ENGINE_CONN.execute(
-        "SELECT id FROM chat_threads WHERE id = ? AND user_id = ?",
-        (thread_id, current_user["id"])
-    )
+    query = "SELECT id FROM chat_threads WHERE id = ? AND user_id = ?"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    cur = execute_query(ENGINE_CONN, query, (thread_id, current_user["id"]))
     if not cur.fetchone():
         raise HTTPException(status_code=404, detail="Thread not found")
     
     # Get messages
-    cur = ENGINE_CONN.execute(
-        "SELECT id, role, message, metadata, created_at FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC",
-        (thread_id,)
-    )
+    query = "SELECT id, role, message, metadata, created_at FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC"
+    if DB_TYPE == "postgres":
+        query = query.replace("?", "%s")
+    cur = execute_query(ENGINE_CONN, query, (thread_id,))
     messages = []
     for row in cur.fetchall():
         messages.append({
@@ -1113,9 +1412,12 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
         # Check for A/B test configs
         ab_test_configs = {}
         try:
-            cur = ENGINE_CONN.execute(
-                "SELECT config_key, config_value FROM ab_test_configs WHERE is_active = 1"
-            )
+            query = "SELECT config_key, config_value FROM ab_test_configs WHERE is_active = ?"
+            if DB_TYPE == "postgres":
+                query = query.replace("?", "%s")
+                cur = execute_query(ENGINE_CONN, query, (True,))
+            else:
+                cur = execute_query(ENGINE_CONN, query, (1,))
             for row in cur.fetchall():
                 try:
                     ab_test_configs[row[0]] = json.loads(row[1])
@@ -1281,9 +1583,15 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
             results = []
         else:
             # Get game names for display
-            cur = ENGINE_CONN.execute("SELECT name FROM games WHERE id IN (?, ?)", (a, b))
+            query = "SELECT name FROM games WHERE id IN (?, ?)"
+            if DB_TYPE == "postgres":
+                query = query.replace("?", "%s")
+            cur = execute_query(ENGINE_CONN, query, (a, b))
             game_names = {row[0]: row[0] for row in cur.fetchall()}
-            cur = ENGINE_CONN.execute("SELECT id, name FROM games WHERE id IN (?, ?)", (a, b))
+            query = "SELECT id, name FROM games WHERE id IN (?, ?)"
+            if DB_TYPE == "postgres":
+                query = query.replace("?", "%s")
+            cur = execute_query(ENGINE_CONN, query, (a, b))
             game_info = {row[0]: row[1] for row in cur.fetchall()}
             game_a_name = game_info.get(a, f"Game {a}")
             game_b_name = game_info.get(b, f"Game {b}")
@@ -1393,32 +1701,139 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
     if current_user:
         if not thread_id:
             # Create new thread
-            cur = ENGINE_CONN.execute(
-                "INSERT INTO chat_threads (user_id, title) VALUES (?, ?)",
-                (current_user["id"], req.message[:50])  # Use first 50 chars as title
-            )
-            ENGINE_CONN.commit()
-            thread_id = cur.lastrowid
-            logger.debug(f"Created new chat thread {thread_id} for user {current_user['id']}")
+            insert_sql = "INSERT INTO chat_threads (user_id, title) VALUES (?, ?)"
+            if DB_TYPE == "postgres":
+                insert_sql = insert_sql.replace("?", "%s") + " RETURNING id"
+            
+            try:
+                cur = execute_query(
+                    ENGINE_CONN,
+                    insert_sql,
+                    (current_user["id"], req.message[:50])  # Use first 50 chars as title
+                )
+                ENGINE_CONN.commit()
+                if DB_TYPE == "postgres":
+                    thread_id = cur.fetchone()[0]
+                else:
+                    thread_id = cur.lastrowid
+                logger.debug(f"Created new chat thread {thread_id} for user {current_user['id']}")
+            except Exception as e:
+                # Handle sequence sync issues for PostgreSQL
+                is_unique_violation = False
+                if DB_TYPE == "postgres":
+                    if psycopg2 and psycopg2.errors:
+                        is_unique_violation = isinstance(e, psycopg2.errors.UniqueViolation)
+                    else:
+                        # Fallback check if psycopg2.errors not available
+                        is_unique_violation = "UniqueViolation" in str(type(e).__name__) or "duplicate key" in str(e).lower()
+                
+                if is_unique_violation:
+                    logger.warning(f"Sequence out of sync for chat_threads, fixing: {e}")
+                    try:
+                        # Fix the sequence by setting it to max(id) + 1
+                        fix_seq_query = "SELECT setval('chat_threads_id_seq', COALESCE((SELECT MAX(id) FROM chat_threads), 0) + 1, false)"
+                        execute_query(ENGINE_CONN, fix_seq_query)
+                        ENGINE_CONN.commit()
+                        # Retry the insert
+                        cur = execute_query(
+                            ENGINE_CONN,
+                            insert_sql,
+                            (current_user["id"], req.message[:50])
+                        )
+                        ENGINE_CONN.commit()
+                        thread_id = cur.fetchone()[0]
+                        logger.info(f"Fixed sequence and created new chat thread {thread_id} for user {current_user['id']}")
+                    except Exception as retry_error:
+                        logger.error(f"Failed to fix sequence and retry insert: {retry_error}", exc_info=True)
+                        raise
+                else:
+                    raise
         
         # Save user message
-        ENGINE_CONN.execute(
-            "INSERT INTO chat_messages (thread_id, role, message) VALUES (?, ?, ?)",
-            (thread_id, "user", req.message)
-        )
+        user_msg_sql = "INSERT INTO chat_messages (thread_id, role, message) VALUES (?, ?, ?)"
+        if DB_TYPE == "postgres":
+            user_msg_sql = user_msg_sql.replace("?", "%s")
+        try:
+            execute_query(
+                ENGINE_CONN,
+                user_msg_sql,
+                (thread_id, "user", req.message)
+            )
+        except Exception as e:
+            # Handle sequence sync issues for PostgreSQL
+            is_unique_violation = False
+            if DB_TYPE == "postgres":
+                if psycopg2 and psycopg2.errors:
+                    is_unique_violation = isinstance(e, psycopg2.errors.UniqueViolation)
+                else:
+                    is_unique_violation = "UniqueViolation" in str(type(e).__name__) or "duplicate key" in str(e).lower()
+            
+            if is_unique_violation:
+                logger.warning(f"Sequence out of sync for chat_messages, fixing: {e}")
+                try:
+                    # Fix the sequence by setting it to max(id) + 1
+                    fix_seq_query = "SELECT setval('chat_messages_id_seq', COALESCE((SELECT MAX(id) FROM chat_messages), 0) + 1, false)"
+                    execute_query(ENGINE_CONN, fix_seq_query)
+                    ENGINE_CONN.commit()
+                    # Retry the insert
+                    execute_query(
+                        ENGINE_CONN,
+                        user_msg_sql,
+                        (thread_id, "user", req.message)
+                    )
+                    logger.info(f"Fixed sequence and inserted user message for thread {thread_id}")
+                except Exception as retry_error:
+                    logger.error(f"Failed to fix sequence and retry user message insert: {retry_error}", exc_info=True)
+                    raise
+            else:
+                raise
         
         # Save assistant message
         metadata = {
             "results": results,
             "query_spec": query_spec
         }
-        ENGINE_CONN.execute(
-            "INSERT INTO chat_messages (thread_id, role, message, metadata) VALUES (?, ?, ?, ?)",
-            (thread_id, "assistant", reply_text, json.dumps(metadata))
-        )
+        assistant_msg_sql = "INSERT INTO chat_messages (thread_id, role, message, metadata) VALUES (?, ?, ?, ?)"
+        if DB_TYPE == "postgres":
+            assistant_msg_sql = assistant_msg_sql.replace("?", "%s")
+        try:
+            execute_query(
+                ENGINE_CONN,
+                assistant_msg_sql,
+                (thread_id, "assistant", reply_text, json.dumps(metadata))
+            )
+        except Exception as e:
+            # Handle sequence sync issues for PostgreSQL
+            is_unique_violation = False
+            if DB_TYPE == "postgres":
+                if psycopg2 and psycopg2.errors:
+                    is_unique_violation = isinstance(e, psycopg2.errors.UniqueViolation)
+                else:
+                    is_unique_violation = "UniqueViolation" in str(type(e).__name__) or "duplicate key" in str(e).lower()
+            
+            if is_unique_violation:
+                logger.warning(f"Sequence out of sync for chat_messages, fixing: {e}")
+                try:
+                    # Fix the sequence by setting it to max(id) + 1
+                    fix_seq_query = "SELECT setval('chat_messages_id_seq', COALESCE((SELECT MAX(id) FROM chat_messages), 0) + 1, false)"
+                    execute_query(ENGINE_CONN, fix_seq_query)
+                    ENGINE_CONN.commit()
+                    # Retry the insert
+                    execute_query(
+                        ENGINE_CONN,
+                        assistant_msg_sql,
+                        (thread_id, "assistant", reply_text, json.dumps(metadata))
+                    )
+                    logger.info(f"Fixed sequence and inserted assistant message for thread {thread_id}")
+                except Exception as retry_error:
+                    logger.error(f"Failed to fix sequence and retry assistant message insert: {retry_error}", exc_info=True)
+                    raise
+            else:
+                raise
         
         # Update thread updated_at
-        ENGINE_CONN.execute(
+        execute_query(
+            ENGINE_CONN,
             "UPDATE chat_threads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (thread_id,)
         )
@@ -1500,13 +1915,13 @@ def get_game_features_endpoint(game_id: int, current_user: Optional[Dict[str, An
         features = get_game_features(ENGINE_CONN, game_id)
         
         # Get feature modifications
-        cur = ENGINE_CONN.execute(
-            """SELECT feature_type, feature_id, action 
+        query = """SELECT feature_type, feature_id, action 
                FROM feature_mods 
                WHERE game_id = ? 
-               ORDER BY created_at DESC""",
-            (game_id,)
-        )
+               ORDER BY created_at DESC"""
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query, (game_id,))
         mods = cur.fetchall()
         
         # Apply modifications to get final feature set
@@ -1523,7 +1938,10 @@ def get_game_features_endpoint(game_id: int, current_user: Optional[Dict[str, An
         available_features = {}
         for feature_type in ["mechanics", "categories", "designers", "artists", "publishers", "families"]:
             table_name = feature_type if feature_type != "families" else "families"
-            cur = ENGINE_CONN.execute(f"SELECT id, name FROM {table_name} ORDER BY name")
+            query = f"SELECT id, name FROM {table_name} ORDER BY name"
+            if DB_TYPE == "postgres":
+                query = query.replace("?", "%s")
+            cur = execute_query(ENGINE_CONN, query)
             available_features[feature_type] = [{"id": row[0], "name": row[1]} for row in cur.fetchall()]
         
         # Apply modifications
@@ -1534,7 +1952,10 @@ def get_game_features_endpoint(game_id: int, current_user: Optional[Dict[str, An
             
             # Find feature name
             table_name = feature_type if feature_type != "families" else "families"
-            cur = ENGINE_CONN.execute(f"SELECT name FROM {table_name} WHERE id = ?", (feature_id,))
+            query = f"SELECT name FROM {table_name} WHERE id = ?"
+            if DB_TYPE == "postgres":
+                query = query.replace("?", "%s")
+            cur = execute_query(ENGINE_CONN, query, (feature_id,))
             row = cur.fetchone()
             if row:
                 feature_name = row[0]
@@ -1586,22 +2007,28 @@ def modify_game_features(
     
     try:
         # Verify game exists
-        cur = ENGINE_CONN.execute("SELECT id FROM games WHERE id = ?", (game_id,))
+        query = "SELECT id FROM games WHERE id = ?"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query, (game_id,))
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Game not found")
         
         # Verify feature exists
         table_name = feature_type if feature_type != "families" else "families"
-        cur = ENGINE_CONN.execute(f"SELECT id FROM {table_name} WHERE id = ?", (feature_id,))
+        query = f"SELECT id FROM {table_name} WHERE id = ?"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query, (feature_id,))
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Feature not found")
         
         # Check if modification already exists
-        cur = ENGINE_CONN.execute(
-            """SELECT id FROM feature_mods 
-               WHERE game_id = ? AND feature_type = ? AND feature_id = ? AND action = ?""",
-            (game_id, feature_type, feature_id, action)
-        )
+        query = """SELECT id FROM feature_mods 
+               WHERE game_id = ? AND feature_type = ? AND feature_id = ? AND action = ?"""
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query, (game_id, feature_type, feature_id, action))
         existing = cur.fetchone()
         
         if existing:
@@ -1610,18 +2037,18 @@ def modify_game_features(
         
         # Remove opposite action if it exists
         opposite_action = "remove" if action == "add" else "add"
-        ENGINE_CONN.execute(
-            """DELETE FROM feature_mods 
-               WHERE game_id = ? AND feature_type = ? AND feature_id = ? AND action = ?""",
-            (game_id, feature_type, feature_id, opposite_action)
-        )
+        query = """DELETE FROM feature_mods 
+               WHERE game_id = ? AND feature_type = ? AND feature_id = ? AND action = ?"""
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        execute_query(ENGINE_CONN, query, (game_id, feature_type, feature_id, opposite_action))
         
         # Add new modification
-        ENGINE_CONN.execute(
-            """INSERT INTO feature_mods (game_id, feature_type, feature_id, action)
-               VALUES (?, ?, ?, ?)""",
-            (game_id, feature_type, feature_id, action)
-        )
+        query = """INSERT INTO feature_mods (game_id, feature_type, feature_id, action)
+               VALUES (?, ?, ?, ?)"""
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        execute_query(ENGINE_CONN, query, (game_id, feature_type, feature_id, action))
         ENGINE_CONN.commit()
         
         return {"success": True, "message": f"Feature {action}ed successfully"}
@@ -1640,7 +2067,8 @@ def remove_feature_modification(
 ):
     """Remove a feature modification."""
     try:
-        cur = ENGINE_CONN.execute(
+        cur = execute_query(
+            ENGINE_CONN,
             "DELETE FROM feature_mods WHERE id = ? AND game_id = ?",
             (mod_id, game_id)
         )
@@ -1672,7 +2100,7 @@ def search_marketplace_endpoint(
         from backend.marketplace_service import search_marketplace
         
         # Get game name for search
-        cur = ENGINE_CONN.execute("SELECT name FROM games WHERE id = ?", (game_id,))
+        cur = execute_query(ENGINE_CONN, "SELECT name FROM games WHERE id = ?", (game_id,))
         game_row = cur.fetchone()
         if not game_row:
             raise HTTPException(status_code=404, detail="Game not found")
@@ -1701,13 +2129,17 @@ def search_marketplace_endpoint(
 def get_random_feedback_question(current_user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     """Get a random active feedback question with its options."""
     try:
-        cur = ENGINE_CONN.execute(
-            """SELECT id, question_text, question_type 
+        # Use RANDOM() for SQLite, RANDOM() for PostgreSQL (both support it)
+        query = """SELECT id, question_text, question_type 
                FROM feedback_questions 
-               WHERE is_active = 1 
+               WHERE is_active = ? 
                ORDER BY RANDOM() 
                LIMIT 1"""
-        )
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+            cur = execute_query(ENGINE_CONN, query, (True,))
+        else:
+            cur = execute_query(ENGINE_CONN, query, (1,))
         row = cur.fetchone()
         
         if not row:
@@ -1716,7 +2148,8 @@ def get_random_feedback_question(current_user: Optional[Dict[str, Any]] = Depend
         question_id = row[0]
         
         # Get options for this question with their IDs
-        cur = ENGINE_CONN.execute(
+        cur = execute_query(
+            ENGINE_CONN,
             """SELECT id, option_text FROM feedback_question_options 
                WHERE question_id = ? 
                ORDER BY display_order, id""",
@@ -1739,45 +2172,81 @@ def get_random_feedback_question(current_user: Optional[Dict[str, Any]] = Depend
 def get_helpful_question(current_user: Optional[Dict[str, Any]] = Depends(get_current_user)):
     """Get or create the 'Were these results helpful?' question with Yes/No options."""
     try:
+        # Ensure transaction is clean before starting
+        if DB_TYPE == "postgres":
+            try:
+                ENGINE_CONN.rollback()
+            except:
+                pass  # Ignore if no transaction in progress
+        
         # Try to find existing question
-        cur = ENGINE_CONN.execute(
-            """SELECT id FROM feedback_questions 
+        query = """SELECT id FROM feedback_questions 
                WHERE question_text = 'Were these results helpful?' 
                LIMIT 1"""
-        )
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query)
         row = cur.fetchone()
         
         if row:
             question_id = row[0]
         else:
             # Create the question if it doesn't exist
-            cur = ENGINE_CONN.execute(
-                """INSERT INTO feedback_questions (question_text, question_type, is_active)
-                   VALUES (?, ?, ?)""",
-                ("Were these results helpful?", "single_select", 1)
-            )
-            question_id = cur.lastrowid
-            
-            # Create Yes and No options
-            ENGINE_CONN.execute(
-                """INSERT INTO feedback_question_options (question_id, option_text, display_order)
-                   VALUES (?, ?, ?)""",
-                (question_id, "Yes", 0)
-            )
-            ENGINE_CONN.execute(
-                """INSERT INTO feedback_question_options (question_id, option_text, display_order)
-                   VALUES (?, ?, ?)""",
-                (question_id, "No", 1)
-            )
+            query = """INSERT INTO feedback_questions (question_text, question_type, is_active)
+                   VALUES (?, ?, ?)"""
+            if DB_TYPE == "postgres":
+                query = query.replace("?", "%s") + " RETURNING id"
+                cur = execute_query(ENGINE_CONN, query, ("Were these results helpful?", "single_select", True))
+                question_id = cur.fetchone()[0]
+            else:
+                cur = execute_query(ENGINE_CONN, query, ("Were these results helpful?", "single_select", 1))
+                question_id = cur.lastrowid
             ENGINE_CONN.commit()
         
+        # Always ensure Yes and No options exist (regardless of whether question was just created)
+        # Use a more robust approach: try to insert, ignore errors if they already exist
+        options_to_insert = [("Yes", 0), ("No", 1)]
+        for option_text, display_order in options_to_insert:
+            try:
+                if DB_TYPE == "postgres":
+                    # For PostgreSQL, check first, then insert if not exists
+                    query_check = """SELECT id FROM feedback_question_options 
+                                  WHERE question_id = %s AND option_text = %s"""
+                    cur = execute_query(ENGINE_CONN, query_check, (question_id, option_text))
+                    existing = cur.fetchone()
+                    if not existing:
+                        query = """INSERT INTO feedback_question_options (question_id, option_text, display_order)
+                               VALUES (%s, %s, %s)"""
+                        execute_query(ENGINE_CONN, query, (question_id, option_text, display_order))
+                        ENGINE_CONN.commit()
+                        logger.info(f"Inserted '{option_text}' option for question {question_id}")
+                else:
+                    # For SQLite, check first, then insert if not exists
+                    query_check = """SELECT id FROM feedback_question_options 
+                                  WHERE question_id = ? AND option_text = ?"""
+                    cur = execute_query(ENGINE_CONN, query_check, (question_id, option_text))
+                    existing = cur.fetchone()
+                    if not existing:
+                        query = """INSERT INTO feedback_question_options (question_id, option_text, display_order)
+                               VALUES (?, ?, ?)"""
+                        execute_query(ENGINE_CONN, query, (question_id, option_text, display_order))
+                        ENGINE_CONN.commit()
+                        logger.info(f"Inserted '{option_text}' option for question {question_id}")
+            except Exception as e:
+                # If insert fails, that's okay - option may already exist or there's a constraint
+                logger.warning(f"Could not insert '{option_text}' option for question {question_id} (may already exist): {e}")
+                try:
+                    ENGINE_CONN.rollback()
+                except:
+                    pass
+        
         # Get options with their IDs
-        cur = ENGINE_CONN.execute(
-            """SELECT id, option_text FROM feedback_question_options 
+        query = """SELECT id, option_text FROM feedback_question_options 
                WHERE question_id = ? 
-               ORDER BY display_order, id""",
-            (question_id,)
-        )
+               ORDER BY display_order, id"""
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query, (question_id,))
         options = [{"id": opt[0], "text": opt[1]} for opt in cur.fetchall()]
         
         return {
@@ -1812,10 +2281,12 @@ def submit_feedback_response(
         
         # Verify question exists if provided
         if question_id is not None:
-            cur = ENGINE_CONN.execute(
-                "SELECT id, question_type FROM feedback_questions WHERE id = ? AND is_active = 1",
-                (question_id,)
-            )
+            query = "SELECT id, question_type FROM feedback_questions WHERE id = ? AND is_active = ?"
+            if DB_TYPE == "postgres":
+                query = query.replace("?", "%s")
+                cur = execute_query(ENGINE_CONN, query, (question_id, True))
+            else:
+                cur = execute_query(ENGINE_CONN, query, (question_id, 1))
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Question not found")
@@ -1826,10 +2297,10 @@ def submit_feedback_response(
             if question_type == "single_select":
                 if option_id is None:
                     raise HTTPException(status_code=400, detail="option_id required for single_select questions")
-                cur = ENGINE_CONN.execute(
-                    "SELECT id FROM feedback_question_options WHERE id = ? AND question_id = ?",
-                    (option_id, question_id)
-                )
+                query = "SELECT id FROM feedback_question_options WHERE id = ? AND question_id = ?"
+                if DB_TYPE == "postgres":
+                    query = query.replace("?", "%s")
+                cur = execute_query(ENGINE_CONN, query, (option_id, question_id))
                 if not cur.fetchone():
                     raise HTTPException(status_code=404, detail="Option not found or doesn't belong to question")
             # For multi_select, response should contain JSON array of option IDs
@@ -1842,10 +2313,10 @@ def submit_feedback_response(
                         raise HTTPException(status_code=400, detail="response must be a JSON array for multi_select questions")
                     # Verify all option IDs exist and belong to this question
                     for opt_id in option_ids:
-                        cur = ENGINE_CONN.execute(
-                            "SELECT id FROM feedback_question_options WHERE id = ? AND question_id = ?",
-                            (opt_id, question_id)
-                        )
+                        query = "SELECT id FROM feedback_question_options WHERE id = ? AND question_id = ?"
+                        if DB_TYPE == "postgres":
+                            query = query.replace("?", "%s")
+                        cur = execute_query(ENGINE_CONN, query, (opt_id, question_id))
                         if not cur.fetchone():
                             raise HTTPException(status_code=404, detail=f"Option {opt_id} not found or doesn't belong to question")
                 except json.JSONDecodeError:
@@ -1856,7 +2327,8 @@ def submit_feedback_response(
             try:
                 option_ids = json.loads(response)
                 for opt_id in option_ids:
-                    ENGINE_CONN.execute(
+                    execute_query(
+                        ENGINE_CONN,
                         """INSERT INTO user_feedback_responses 
                            (user_id, question_id, option_id, response, context, thread_id)
                            VALUES (?, ?, ?, ?, ?, ?)""",
@@ -1875,7 +2347,8 @@ def submit_feedback_response(
             # For single_select or text, create a single response record
             # Ensure all fields are properly set
             logger.debug(f"Inserting feedback: user_id={int(current_user['id'])}, question_id={question_id}, option_id={option_id}, response={response}, context={context}, thread_id={thread_id}")
-            ENGINE_CONN.execute(
+            execute_query(
+                ENGINE_CONN,
                 """INSERT INTO user_feedback_responses 
                    (user_id, question_id, option_id, response, context, thread_id)
                    VALUES (?, ?, ?, ?, ?, ?)""",
@@ -1892,7 +2365,8 @@ def submit_feedback_response(
         ENGINE_CONN.commit()
         
         # Verify the record was inserted
-        cur = ENGINE_CONN.execute(
+        cur = execute_query(
+            ENGINE_CONN,
             "SELECT id, user_id, question_id, option_id, response, context, thread_id FROM user_feedback_responses WHERE id = (SELECT MAX(id) FROM user_feedback_responses WHERE user_id = ?)",
             (int(current_user["id"]),)
         )
@@ -1933,10 +2407,13 @@ def get_all_games(
             sql = "SELECT id, name, year_published, thumbnail FROM games ORDER BY name LIMIT ? OFFSET ?"
             params = (per_page, offset)
         
-        cur = ENGINE_CONN.execute(count_sql, count_params)
+        if DB_TYPE == "postgres":
+            count_sql = count_sql.replace("?", "%s")
+            sql = sql.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, count_sql, count_params)
         total = cur.fetchone()[0]
         
-        cur = ENGINE_CONN.execute(sql, params)
+        cur = execute_query(ENGINE_CONN, sql, params)
         games = []
         for row in cur.fetchall():
             games.append({
@@ -1965,22 +2442,23 @@ def get_all_feedback_questions(
 ):
     """Get all feedback questions with their options."""
     try:
-        cur = ENGINE_CONN.execute(
-            """SELECT id, question_text, question_type, is_active, created_at 
+        query = """SELECT id, question_text, question_type, is_active, created_at 
                FROM feedback_questions 
                ORDER BY created_at DESC"""
-        )
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query)
         questions = []
         for row in cur.fetchall():
             question_id = row[0]
             # Get options for this question
-            cur_opts = ENGINE_CONN.execute(
-                """SELECT id, option_text, display_order 
+            query_opts = """SELECT id, option_text, display_order 
                    FROM feedback_question_options 
                    WHERE question_id = ? 
-                   ORDER BY display_order, id""",
-                (question_id,)
-            )
+                   ORDER BY display_order, id"""
+            if DB_TYPE == "postgres":
+                query_opts = query_opts.replace("?", "%s")
+            cur_opts = execute_query(ENGINE_CONN, query_opts, (question_id,))
             options = [
                 {"id": opt[0], "text": opt[1], "display_order": opt[2]}
                 for opt in cur_opts.fetchall()
@@ -2010,18 +2488,26 @@ def create_feedback_question(
             raise HTTPException(status_code=400, detail="Invalid question type")
         
         # Insert question
-        cur = ENGINE_CONN.execute(
-            """INSERT INTO feedback_questions (question_text, question_type, is_active)
-               VALUES (?, ?, ?)""",
+        insert_sql = """INSERT INTO feedback_questions (question_text, question_type, is_active)
+               VALUES (?, ?, ?)"""
+        if DB_TYPE == "postgres":
+            insert_sql = insert_sql.replace("?", "%s") + " RETURNING id"
+        cur = execute_query(
+            ENGINE_CONN,
+            insert_sql,
             (req.question_text, req.question_type, 1 if req.is_active else 0)
         )
-        question_id = cur.lastrowid
+        if DB_TYPE == "postgres":
+            question_id = cur.fetchone()[0]
+        else:
+            question_id = cur.lastrowid
         
         # Insert options if provided (for single_select or multi_select)
         if req.options and req.question_type in ["single_select", "multi_select"]:
             for idx, option_text in enumerate(req.options):
                 if option_text.strip():  # Only insert non-empty options
-                    ENGINE_CONN.execute(
+                    execute_query(
+                        ENGINE_CONN,
                         """INSERT INTO feedback_question_options (question_id, option_text, display_order)
                            VALUES (?, ?, ?)""",
                         (question_id, option_text, idx)
@@ -2045,7 +2531,10 @@ def update_feedback_question(
     """Update a feedback question."""
     try:
         # Verify question exists
-        cur = ENGINE_CONN.execute("SELECT id FROM feedback_questions WHERE id = ?", (question_id,))
+        query = "SELECT id FROM feedback_questions WHERE id = ?"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query, (question_id,))
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Question not found")
         
@@ -2053,28 +2542,28 @@ def update_feedback_question(
             raise HTTPException(status_code=400, detail="Invalid question type")
         
         # Update question fields
-        ENGINE_CONN.execute(
-            """UPDATE feedback_questions 
+        query = """UPDATE feedback_questions 
                SET question_text = ?, question_type = ?, is_active = ?
-               WHERE id = ?""",
-            (req.question_text, req.question_type, 1 if req.is_active else 0, question_id)
-        )
+               WHERE id = ?"""
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        execute_query(ENGINE_CONN, query, (req.question_text, req.question_type, 1 if req.is_active else 0, question_id))
         
         # Update options
         # Delete existing options
-        ENGINE_CONN.execute(
-            "DELETE FROM feedback_question_options WHERE question_id = ?",
-            (question_id,)
-        )
+        query = "DELETE FROM feedback_question_options WHERE question_id = ?"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        execute_query(ENGINE_CONN, query, (question_id,))
         # Insert new options if provided (for single_select or multi_select)
         if req.options and req.question_type in ["single_select", "multi_select"]:
             for idx, option_text in enumerate(req.options):
                 if option_text.strip():  # Only insert non-empty options
-                    ENGINE_CONN.execute(
-                        """INSERT INTO feedback_question_options (question_id, option_text, display_order)
-                           VALUES (?, ?, ?)""",
-                        (question_id, option_text, idx)
-                    )
+                    query = """INSERT INTO feedback_question_options (question_id, option_text, display_order)
+                           VALUES (?, ?, ?)"""
+                    if DB_TYPE == "postgres":
+                        query = query.replace("?", "%s")
+                    execute_query(ENGINE_CONN, query, (question_id, option_text, idx))
         
         ENGINE_CONN.commit()
         return {"success": True, "message": "Question updated"}
@@ -2085,12 +2574,13 @@ def update_feedback_question(
         raise HTTPException(status_code=500, detail=f"Failed to update question: {str(e)}")
 
 
-def _get_or_create_ab_question(conn: sqlite3.Connection, config_key: str, config_data: Dict[str, Any]) -> Dict[str, Any]:
+def _get_or_create_ab_question(conn, config_key: str, config_data: Dict[str, Any]) -> Dict[str, Any]:
     """Get or create a feedback question for an A/B test."""
     question_text = config_data.get("question_text", f"Which response do you prefer for {config_key}?")
     
     # Check if question already exists
-    cur = conn.execute(
+    cur = execute_query(
+        conn,
         "SELECT id FROM feedback_questions WHERE question_text = ? LIMIT 1",
         (question_text,)
     )
@@ -2100,23 +2590,38 @@ def _get_or_create_ab_question(conn: sqlite3.Connection, config_key: str, config
         question_id = row[0]
     else:
         # Create new question
-        cur = conn.execute(
-            """INSERT INTO feedback_questions (question_text, question_type, is_active)
-               VALUES (?, ?, ?)""",
-            (question_text, "single_select", 1)
-        )
-        question_id = cur.lastrowid
+        # Use RETURNING for PostgreSQL, lastrowid for SQLite
+        if DB_TYPE == "postgres":
+            cur = execute_query(
+                conn,
+                """INSERT INTO feedback_questions (question_text, question_type, is_active)
+                   VALUES (?, ?, ?) RETURNING id""",
+                (question_text, "single_select", True)
+            )
+            question_id = cur.fetchone()[0]
+            conn.commit()
+        else:
+            cur = execute_query(
+                conn,
+                """INSERT INTO feedback_questions (question_text, question_type, is_active)
+                   VALUES (?, ?, ?)""",
+                (question_text, "single_select", 1)
+            )
+            question_id = cur.lastrowid
+            conn.commit()
         
         # Create options
         label_a = config_data.get("label_a", "Option A")
         label_b = config_data.get("label_b", "Option B")
         
-        conn.execute(
+        execute_query(
+            conn,
             """INSERT INTO feedback_question_options (question_id, option_text, display_order)
                VALUES (?, ?, ?)""",
             (question_id, label_a, 0)
         )
-        conn.execute(
+        execute_query(
+            conn,
             """INSERT INTO feedback_question_options (question_id, option_text, display_order)
                VALUES (?, ?, ?)""",
             (question_id, label_b, 1)
@@ -2124,7 +2629,8 @@ def _get_or_create_ab_question(conn: sqlite3.Connection, config_key: str, config
         conn.commit()
     
     # Get options
-    cur = conn.execute(
+    cur = execute_query(
+        conn,
         """SELECT id, option_text FROM feedback_question_options 
            WHERE question_id = ? ORDER BY display_order""",
         (question_id,)
@@ -2146,11 +2652,11 @@ def delete_feedback_question(
 ):
     """Delete a feedback question (and its options via CASCADE)."""
     try:
-        cur = ENGINE_CONN.execute("SELECT id FROM feedback_questions WHERE id = ?", (question_id,))
+        cur = execute_query(ENGINE_CONN, "SELECT id FROM feedback_questions WHERE id = ?", (question_id,))
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Question not found")
         
-        ENGINE_CONN.execute("DELETE FROM feedback_questions WHERE id = ?", (question_id,))
+        execute_query(ENGINE_CONN, "DELETE FROM feedback_questions WHERE id = ?", (question_id,))
         ENGINE_CONN.commit()
         return {"success": True, "message": "Question deleted"}
     except HTTPException:
@@ -2167,9 +2673,10 @@ def get_ab_test_configs(
 ):
     """Get all A/B test configurations."""
     try:
-        cur = ENGINE_CONN.execute(
-            "SELECT id, config_key, config_value, is_active, created_at, updated_at FROM ab_test_configs ORDER BY created_at DESC"
-        )
+        query = "SELECT id, config_key, config_value, is_active, created_at, updated_at FROM ab_test_configs ORDER BY created_at DESC"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(ENGINE_CONN, query)
         configs = []
         for row in cur.fetchall():
             try:
@@ -2206,7 +2713,8 @@ def create_ab_test_config(
             raise HTTPException(status_code=400, detail="config_value must be valid JSON")
         
         # Check if config exists
-        cur = ENGINE_CONN.execute(
+        cur = execute_query(
+            ENGINE_CONN,
             "SELECT id FROM ab_test_configs WHERE config_key = ?",
             (config_key,)
         )
@@ -2214,7 +2722,8 @@ def create_ab_test_config(
         
         if existing:
             # Update existing
-            ENGINE_CONN.execute(
+            execute_query(
+                ENGINE_CONN,
                 """UPDATE ab_test_configs 
                    SET config_value = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
                    WHERE config_key = ?""",
@@ -2222,7 +2731,8 @@ def create_ab_test_config(
             )
         else:
             # Create new
-            ENGINE_CONN.execute(
+            execute_query(
+                ENGINE_CONN,
                 """INSERT INTO ab_test_configs (config_key, config_value, is_active)
                    VALUES (?, ?, ?)""",
                 (config_key, config_value, 1 if is_active else 0)
@@ -2267,9 +2777,10 @@ def update_ab_test_config(
         updates.append("updated_at = CURRENT_TIMESTAMP")
         params.append(config_key)
         
-        ENGINE_CONN.execute(
+        execute_query(
+            ENGINE_CONN,
             f"UPDATE ab_test_configs SET {', '.join(updates)} WHERE config_key = ?",
-            params
+            tuple(params)
         )
         ENGINE_CONN.commit()
         return {"success": True, "message": "A/B test config updated"}
@@ -2287,14 +2798,15 @@ def delete_ab_test_config(
 ):
     """Delete an A/B test configuration."""
     try:
-        cur = ENGINE_CONN.execute(
+        cur = execute_query(
+            ENGINE_CONN,
             "SELECT id FROM ab_test_configs WHERE config_key = ?",
             (config_key,)
         )
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Config not found")
         
-        ENGINE_CONN.execute("DELETE FROM ab_test_configs WHERE config_key = ?", (config_key,))
+        execute_query(ENGINE_CONN, "DELETE FROM ab_test_configs WHERE config_key = ?", (config_key,))
         ENGINE_CONN.commit()
         return {"success": True, "message": "A/B test config deleted"}
     except HTTPException:
@@ -2310,7 +2822,7 @@ def health_check():
     try:
         # Check database connection
         if ENGINE_CONN:
-            ENGINE_CONN.execute("SELECT 1").fetchone()
+            execute_query(ENGINE_CONN, "SELECT 1").fetchone()
         
         return {
             "status": "healthy",

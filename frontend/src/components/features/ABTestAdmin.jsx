@@ -1,5 +1,5 @@
 // frontend/src/components/features/ABTestAdmin.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
@@ -14,11 +14,7 @@ function ABTestAdmin({ user }) {
   const [isActive, setIsActive] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
 
-  useEffect(() => {
-    loadConfigs();
-  }, []);
-
-  const loadConfigs = async () => {
+  const loadConfigs = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/admin/ab-test-configs`, {
@@ -36,7 +32,11 @@ function ABTestAdmin({ user }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [navigate]);
+
+  useEffect(() => {
+    loadConfigs();
+  }, [loadConfigs]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

@@ -4,7 +4,7 @@ from typing import List
 
 from tqdm import tqdm
 
-from db import db_connection, ensure_schema
+from backend.db import db_connection, ensure_schema
 
 
 def _fetch_one_game(conn: sqlite3.Connection, game_id: int):

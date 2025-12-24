@@ -9,6 +9,7 @@ function Profile({ user, onUserUpdate }) {
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [username, setUsername] = useState(user.username || ""); // Add local state for username
   const [bggId, setBggId] = useState(user.bgg_id || ""); // Add local state for BGG ID
   const [sortBy, setSortBy] = useState("year_published");
   const [sortOrder, setSortOrder] = useState("desc");
@@ -37,10 +38,11 @@ function Profile({ user, onUserUpdate }) {
     loadCollection();
   }, [loadCollection]);
 
-  // Update bggId when user prop changes
+  // Update username and bggId when user prop changes
   useEffect(() => {
+    setUsername(user.username || "");
     setBggId(user.bgg_id || "");
-  }, [user.bgg_id]);
+  }, [user.username, user.bgg_id]);
 
   const handleSearch = async (query) => {
     setSearchQuery(query);
@@ -130,9 +132,62 @@ function Profile({ user, onUserUpdate }) {
       <div className="profile-header">
         <h2>Profile</h2>
         <div className="user-info">
-          <p>
-            <strong>Username:</strong> {user.username}
-          </p>
+          <div className="username-section">
+            <label>
+              <strong>Username:</strong>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Enter your username"
+                onBlur={async (e) => {
+                  const usernameValue = e.target.value.trim();
+                  
+                  // Only update if value actually changed
+                  if (usernameValue === (user.username || "")) {
+                    return;
+                  }
+                  
+                  if (!usernameValue) {
+                    alert("Username cannot be empty");
+                    setUsername(user.username || "");
+                    return;
+                  }
+                  
+                  try {
+                    const res = await fetch(`${API_BASE}/profile/username`, {
+                      method: "PUT",
+                      headers: {
+                        ...authService.getAuthHeaders(),
+                        "Content-Type": "application/json",
+                      },
+                      body: JSON.stringify({ username: usernameValue }),
+                    });
+                    if (res.ok) {
+                      const data = await res.json();
+                      // Update local state to match server response
+                      setUsername(data.username || "");
+                      // Update user object and notify parent
+                      user.username = data.username;
+                      // Refresh user data from server to ensure consistency
+                      if (onUserUpdate) {
+                        await onUserUpdate();
+                      }
+                    } else {
+                      const error = await res.json();
+                      alert(error.detail || "Failed to update username");
+                      // Revert to original value on error
+                      setUsername(user.username || "");
+                    }
+                  } catch (err) {
+                    alert("Failed to update username: " + err.message);
+                    // Revert to original value on error
+                    setUsername(user.username || "");
+                  }
+                }}
+              />
+            </label>
+          </div>
           <div className="bgg-id-section">
             <label>
               <strong>BGG Username/ID:</strong>
