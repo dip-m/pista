@@ -19,8 +19,14 @@ if [ -f ".env.$ENV" ]; then
     source .env.$ENV
     set +a
 else
-    echo "Warning: .env.$ENV not found. Using system environment variables."
-    echo "Please create .env.$ENV file. See ENV_SETUP.md for details."
+    # On Render/cloud platforms, env vars are set via platform config
+    # This is expected and not an error
+    if [ "$ENV" = "prod" ] && [ -n "$RENDER" ] || [ -n "$DATABASE_URL" ]; then
+        echo "Using system environment variables (expected on Render/cloud platforms)."
+    else
+        echo "Warning: .env.$ENV not found. Using system environment variables."
+        echo "Please create .env.$ENV file. See ENV_SETUP.md for details."
+    fi
 fi
 
 # Check if virtual environment exists, create if not
@@ -55,9 +61,16 @@ export WATCHFILES_IGNORE_PATHS="venv:.git:__pycache__:*.pyc:gen:logs:node_module
 # Start with uvicorn
 # Only watch backend directory - main.py and db.py are now in backend/
 # This completely avoids watching venv and root directory
-uvicorn backend.main:app \
-    --host "${API_HOST:-0.0.0.0}" \
-    --port "${API_PORT:-8000}" \
-    --reload \
-    --reload-dir backend
+# On production (Render), don't use --reload and use $PORT from environment
+if [ "$ENV" = "prod" ]; then
+    uvicorn backend.main:app \
+        --host "${API_HOST:-0.0.0.0}" \
+        --port "${API_PORT:-$PORT}"
+else
+    uvicorn backend.main:app \
+        --host "${API_HOST:-0.0.0.0}" \
+        --port "${API_PORT:-8000}" \
+        --reload \
+        --reload-dir backend
+fi
 
