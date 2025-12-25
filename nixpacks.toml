@@ -5,11 +5,12 @@
 providers = ["python"]
 
 [phases.setup]
-nixPkgs = ["python311Full"]
+nixPkgs = ["python311"]
 
 [phases.install]
 cmds = [
-  "python -m pip install --no-cache-dir -r requirements-deploy.txt"
+  "python3 -m ensurepip --upgrade",
+  "python3 -m pip install --no-cache-dir -r requirements-deploy.txt"
 ]
 
 [phases.build]
