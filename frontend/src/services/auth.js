@@ -6,8 +6,22 @@ export const authService = {
     return localStorage.getItem("token");
   },
 
-  setToken(token) {
-    localStorage.setItem("token", token);
+  setToken(token, rememberMe = false) {
+    if (rememberMe) {
+      // Store token with longer expiration (30 days)
+      localStorage.setItem("token", token);
+      localStorage.setItem("token_expires", (Date.now() + 30 * 24 * 60 * 60 * 1000).toString());
+    } else {
+      // Store token with session expiration (24 hours)
+      localStorage.setItem("token", token);
+      localStorage.setItem("token_expires", (Date.now() + 24 * 60 * 60 * 1000).toString());
+    }
+  },
+  
+  isTokenExpired() {
+    const expires = localStorage.getItem("token_expires");
+    if (!expires) return true;
+    return Date.now() > parseInt(expires, 10);
   },
 
   removeToken() {
@@ -19,7 +33,7 @@ export const authService = {
     return token ? { Authorization: `Bearer ${token}` } : {};
   },
 
-  async register(email, password) {
+  async register(email, password, rememberMe = false) {
     const res = await fetch(`${API_BASE}/auth/email/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -30,11 +44,11 @@ export const authService = {
       throw new Error(error.detail || "Registration failed");
     }
     const data = await res.json();
-    this.setToken(data.access_token);
+    this.setToken(data.access_token, rememberMe);
     return data;
   },
 
-  async login(email, password) {
+  async login(email, password, rememberMe = false) {
     const res = await fetch(`${API_BASE}/auth/email/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -45,7 +59,7 @@ export const authService = {
       throw new Error(error.detail || "Login failed");
     }
     const data = await res.json();
-    this.setToken(data.access_token);
+    this.setToken(data.access_token, rememberMe);
     return data;
   },
 
@@ -81,6 +95,7 @@ export const authService = {
 
   logout() {
     this.removeToken();
+    localStorage.removeItem("token_expires");
   },
 };
 

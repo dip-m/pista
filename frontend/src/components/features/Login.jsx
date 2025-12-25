@@ -25,19 +25,14 @@ function Login({ onLogin }) {
     try {
       let isNewUser = false;
       if (isRegister) {
-        await authService.register(email, password);
+        await authService.register(email, password, rememberMe);
         isNewUser = true;
       } else {
-        await authService.login(email, password);
+        await authService.login(email, password, rememberMe);
       }
-      await onLogin(isNewUser);
-      // Redirect: new users to profile, returning users to chat
-      const userData = await authService.getCurrentUser();
-      if (isNewUser || !userData.username || userData.username === userData.email) {
-        navigate("/profile");
-      } else {
-        navigate("/");
-      }
+      const userData = await onLogin(isNewUser);
+      // Always redirect to chat after login (route will handle profile redirect if needed)
+      navigate("/");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -69,14 +64,9 @@ function Login({ onLogin }) {
           userInfo.email,
           userInfo.name
         );
-        await onLogin(result.is_new_user || false);
-        // Check if new user and redirect accordingly
-        const userData = await authService.getCurrentUser();
-        if (!userData.username || userData.username === userData.email) {
-          navigate("/profile");
-        } else {
-          navigate("/");
-        }
+        const userData = await onLogin(result.is_new_user || false);
+        // Always redirect to chat after login
+        navigate("/");
       } catch (err) {
         setError(err.message || 'Google login failed');
       } finally {
@@ -110,14 +100,9 @@ function Login({ onLogin }) {
         userInfo.mail || userInfo.userPrincipalName,
         userInfo.displayName
       );
-      await onLogin(result.is_new_user || false);
-      // Check if new user and redirect accordingly
-      const userData = await authService.getCurrentUser();
-      if (!userData.username || userData.username === userData.email) {
-        navigate("/profile");
-      } else {
-        navigate("/");
-      }
+      const userData = await onLogin(result.is_new_user || false);
+      // Always redirect to chat after login
+      navigate("/");
     } catch (err) {
       setError(err.message || 'Microsoft login failed. Please configure Microsoft OAuth credentials.');
     } finally {
@@ -240,6 +225,17 @@ function Login({ onLogin }) {
               onChange={(e) => setPassword(e.target.value)}
               required
             />
+          </div>
+          <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <input
+              type="checkbox"
+              id="rememberMe"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+            />
+            <label htmlFor="rememberMe" style={{ margin: 0, cursor: "pointer" }}>
+              Remember me
+            </label>
           </div>
           {error && <div className="error-message">{error}</div>}
           <button type="submit" disabled={loading || oauthLoading}>

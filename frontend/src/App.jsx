@@ -36,15 +36,20 @@ function App() {
   const checkAuth = async () => {
     const token = authService.getToken();
     if (token) {
-      try {
-        const userData = await authService.getCurrentUser();
-        if (userData) {
-          setUser(userData);
-        } else {
+      // Check if token is expired
+      if (authService.isTokenExpired && authService.isTokenExpired()) {
+        authService.logout();
+      } else {
+        try {
+          const userData = await authService.getCurrentUser();
+          if (userData) {
+            setUser(userData);
+          } else {
+            authService.logout();
+          }
+        } catch (err) {
           authService.logout();
         }
-      } catch (err) {
-        authService.logout();
       }
     }
     setLoading(false);
@@ -53,7 +58,8 @@ function App() {
   const handleLogin = async (isNewUser = false) => {
     const userData = await authService.getCurrentUser();
     setUser(userData);
-    // If new user (no username set), they'll be redirected to profile by the route logic
+    // Always redirect to chat after login (profile redirect happens in route if needed)
+    return userData;
   };
 
   // Callback to update user when BGG ID changes
@@ -144,14 +150,15 @@ function App() {
             path="/"
             element={
               user ? (
-                // First-time users (no username or username equals email) should go to profile
+                // If user doesn't have a username set, redirect to profile
                 (!user.username || user.username === user.email) ? (
                   <Navigate to="/profile" replace />
                 ) : (
                   <PistaChat user={user} />
                 )
               ) : (
-                <Navigate to="/login" replace />
+                // Allow anonymous access to chat
+                <PistaChat user={null} />
               )
             }
           />

@@ -1,10 +1,12 @@
 // frontend/src/components/features/PistaChat.jsx
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Link } from "react-router-dom";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
 import Marketplace from "./Marketplace";
 import GameFeaturesEditor from "./GameFeaturesEditor";
 import ScoringPad from "./ScoringPad";
+import { getAnonymousUserId, hasExceededLimit, incrementMessageCount, getRemainingMessages } from "../../utils/anonymousUser";
 
 // Common prompts that can be used as chips
 const COMMON_PROMPTS = [
@@ -973,6 +975,17 @@ function PistaChat({ user }) {
     // Prevent duplicate sends - if already processing, don't send again
     if (isProcessing) return;
     
+    // Check message limit for anonymous users
+    if (!user) {
+      if (hasExceededLimit(5)) {
+        setMessageLimitError(`You've reached the daily limit of 5 messages. Please log in to continue chatting!`);
+        return;
+      }
+    }
+    
+    // Clear any previous message limit error
+    setMessageLimitError(null);
+    
     // Allow sending if there's input OR if there are active required features
     if (!input.trim() && activeRequiredFeatures.length === 0) return;
     
@@ -1015,6 +1028,11 @@ function PistaChat({ user }) {
       finalMessageText = finalMessageText + " in my collection";
     }
 
+    // Increment message count for anonymous users
+    if (!user) {
+      incrementMessageCount();
+    }
+    
     // Set processing state and timeout indicator
     setIsProcessing(true);
     setShowProcessingIndicator(false);
@@ -1446,6 +1464,34 @@ function PistaChat({ user }) {
         </div>
 
         <div className="chat-input-container" style={{ position: "relative" }}>
+          {/* Message limit warning for anonymous users */}
+          {!user && messageLimitError && (
+            <div className="message-limit-error" style={{
+              padding: "0.75rem",
+              marginBottom: "0.5rem",
+              backgroundColor: "#ffebee",
+              border: "1px solid #f44336",
+              borderRadius: "4px",
+              color: "#c62828"
+            }}>
+              {messageLimitError}
+              <Link to="/login" style={{ marginLeft: "0.5rem", color: "#1976d2", textDecoration: "underline" }}>
+                Log in to continue
+              </Link>
+            </div>
+          )}
+          {!user && !messageLimitError && (
+            <div style={{
+              padding: "0.5rem",
+              marginBottom: "0.5rem",
+              fontSize: "0.85rem",
+              color: "#666",
+              backgroundColor: "#f5f5f5",
+              borderRadius: "4px"
+            }}>
+              {getRemainingMessages(5)} messages remaining today. <Link to="/login" style={{ color: "#1976d2", textDecoration: "underline" }}>Log in</Link> for unlimited messages.
+            </div>
+          )}
           {/* Processing indicator - only show after 5 seconds */}
           {isProcessing && showProcessingIndicator && (
             <div className="processing-indicator">
