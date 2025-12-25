@@ -20,6 +20,16 @@ def migrate_table(source_conn: psycopg2.extensions.connection,
     """Migrate a single table from source PostgreSQL to target PostgreSQL."""
     print(f"Migrating table: {table_name}")
     
+    # Check if table already has data in target (safety check for reruns)
+    target_cur = target_conn.cursor()
+    try:
+        target_cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+        target_count = target_cur.fetchone()[0]
+    except Exception:
+        # Table might not exist yet, that's okay
+        target_count = 0
+    target_cur.close()
+    
     # Read from source PostgreSQL
     source_cur = source_conn.cursor()
     col_list = ", ".join(columns)
@@ -31,8 +41,15 @@ def migrate_table(source_conn: psycopg2.extensions.connection,
     source_cur.close()
     
     if total_rows == 0:
-        print(f"  Table {table_name} is empty, skipping")
+        print(f"  Table {table_name} is empty in source, skipping")
         return
+    
+    # If target already has all rows (or more), skip migration
+    if target_count >= total_rows:
+        print(f"  Table {table_name} already migrated ({target_count} rows in target, {total_rows} in source), skipping")
+        return
+    elif target_count > 0:
+        print(f"  Table {table_name} partially migrated ({target_count}/{total_rows} rows), continuing...")
     
     print(f"  Migrating {total_rows} rows...")
     

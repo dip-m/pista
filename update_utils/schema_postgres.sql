@@ -233,6 +233,34 @@ CREATE TABLE IF NOT EXISTS fake_door_interactions (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS scoring_mechanisms (
+    id              SERIAL PRIMARY KEY,
+    game_id         INTEGER NOT NULL,
+    criteria_json   TEXT NOT NULL,  -- JSON structure with scoring criteria
+    status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending', 'approved', 'rejected'
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at     TIMESTAMP,
+    reviewed_by     INTEGER,  -- Admin user ID who reviewed
+    review_notes    TEXT,
+    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+    FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL,
+    UNIQUE(game_id, status)  -- Only one approved mechanism per game
+);
+
+CREATE TABLE IF NOT EXISTS user_scoring_sessions (
+    id                  SERIAL PRIMARY KEY,
+    user_id             INTEGER NOT NULL,
+    game_id             INTEGER NOT NULL,
+    mechanism_id        INTEGER NOT NULL,
+    intermediate_scores_json TEXT,  -- JSON array of intermediate scores
+    final_score         REAL,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+    FOREIGN KEY (mechanism_id) REFERENCES scoring_mechanisms(id) ON DELETE CASCADE
+);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_game_mechanics_game ON game_mechanics(game_id);
 CREATE INDEX IF NOT EXISTS idx_game_categories_game ON game_categories(game_id);

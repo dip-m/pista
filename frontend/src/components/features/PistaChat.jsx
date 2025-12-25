@@ -4,6 +4,7 @@ import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
 import Marketplace from "./Marketplace";
 import GameFeaturesEditor from "./GameFeaturesEditor";
+import ScoringPad from "./ScoringPad";
 
 // Common prompts that can be used as chips
 const COMMON_PROMPTS = [
@@ -51,8 +52,10 @@ function PistaChat({ user }) {
   const [atMentionActive, setAtMentionActive] = useState(false);
   const [atMentionPosition, setAtMentionPosition] = useState(0);
   const [atMentionQuery, setAtMentionQuery] = useState("");
+  const [searchDebounceTimer, setSearchDebounceTimer] = useState(null);
   const [marketplaceGame, setMarketplaceGame] = useState(null);
   const [featuresEditorGame, setFeaturesEditorGame] = useState(null);
+  const [scoringPadGame, setScoringPadGame] = useState(null);
   const [helpfulQuestion, setHelpfulQuestion] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showProcessingIndicator, setShowProcessingIndicator] = useState(false);
@@ -114,24 +117,44 @@ function PistaChat({ user }) {
       setShowGameSearch(false);
       return;
     }
-    try {
-      // Increase limit to 20 for better results
-      const res = await fetch(`${API_BASE}/games/search?q=${encodeURIComponent(trimmedQuery)}&limit=20`);
-      if (res.ok) {
-        const data = await res.json();
-        // Handle both old format (array) and new format (object with games/features)
-        if (Array.isArray(data)) {
-          setGameSearchResults(data);
-          setFeatureSearchResults([]);
-        } else {
-          setGameSearchResults(data.games || []);
-          setFeatureSearchResults(data.features || []);
-        }
-        setShowGameSearch(true);
-      }
-    } catch (err) {
-      console.error("Search failed:", err);
+    
+    // Clear existing debounce timer
+    if (searchDebounceTimer) {
+      clearTimeout(searchDebounceTimer);
     }
+    
+    // Debounce search to avoid too many requests
+    const timer = setTimeout(async () => {
+      try {
+        // Increase limit to 20 for better results
+        const res = await fetch(`${API_BASE}/games/search?q=${encodeURIComponent(trimmedQuery)}&limit=20`);
+        if (res.ok) {
+          const data = await res.json();
+          // Handle both old format (array) and new format (object with games/features)
+          if (Array.isArray(data)) {
+            setGameSearchResults(data);
+            setFeatureSearchResults([]);
+          } else {
+            setGameSearchResults(data.games || []);
+            // Reorder features: mechanics, categories, designers, artists
+            const features = data.features || [];
+            const orderedFeatures = [
+              ...features.filter(f => f.type === "mechanics"),
+              ...features.filter(f => f.type === "categories"),
+              ...features.filter(f => f.type === "designers"),
+              ...features.filter(f => f.type === "artists"),
+              ...features.filter(f => f.type === "publishers" && f.type !== "artists")
+            ];
+            setFeatureSearchResults(orderedFeatures);
+          }
+          setShowGameSearch(true);
+        }
+      } catch (err) {
+        console.error("Search failed:", err);
+      }
+    }, 200); // 200ms debounce
+    
+    setSearchDebounceTimer(timer);
   };
 
   // Handle @ mention in input
@@ -1254,6 +1277,12 @@ function PistaChat({ user }) {
           onClose={() => setFeaturesEditorGame(null)}
         />
       )}
+      {scoringPadGame && (
+        <ScoringPad
+          game={scoringPadGame}
+          onClose={() => setScoringPadGame(null)}
+        />
+      )}
       <div className="pista-chat">
         {user && (
           <div className="chat-header">
@@ -1339,7 +1368,7 @@ function PistaChat({ user }) {
             </div>
           ))}
           {doINeedChips.map((chip) => (
-            <div className="chip do-i-need-chip" key={chip.id}>
+            <div className="chip game-chip" key={chip.id}>
               <span 
                 onClick={() => handleDoINeedChipClick(chip)}
                 style={{ cursor: "pointer", flex: 1 }}
@@ -1427,57 +1456,12 @@ function PistaChat({ user }) {
           {/* Search dropdown for @ mentions - shows both games and features */}
           {atMentionActive && showGameSearch && (gameSearchResults.length > 0 || featureSearchResults.length > 0) && (
             <div className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000, maxHeight: "400px", overflowY: "auto" }}>
-              {/* Features section */}
-              {featureSearchResults.length > 0 && (
-                <>
-                  <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderBottom: "1px solid #ddd" }}>
-                    Features
-                  </div>
-                  {featureSearchResults.map((feature) => {
-                    const textBeforeCursor = input.substring(0, cursorPosition);
-                    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-                    const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
-                    
-                    const highlightMatch = (text, query) => {
-                      if (!query) return text;
-                      const words = query.split(/\s+/).filter(w => w.length > 0);
-                      if (words.length === 0) return text;
-                      const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-                      const regex = new RegExp(`(${pattern})`, 'gi');
-                      const parts = text.split(regex);
-                      return parts.map((part, idx) => 
-                        regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
-                      );
-                    };
-                    
-                    return (
-                      <div
-                        key={`${feature.type}-${feature.id}`}
-                        className="game-search-item feature-search-item"
-                        onClick={() => selectFeature(feature)}
-                        style={{ paddingLeft: "2rem" }}
-                      >
-                        <div>
-                          <span style={{ marginRight: "0.5rem" }}>{feature.icon}</span>
-                          <span style={{ fontWeight: "500" }}>{highlightMatch(feature.name, query)}</span>
-                          <span style={{ fontSize: "0.85rem", opacity: 0.7, marginLeft: "0.5rem" }}>
-                            ({feature.type})
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </>
-              )}
-              
-              {/* Games section */}
+              {/* Games section - shown first */}
               {gameSearchResults.length > 0 && (
                 <>
-                  {featureSearchResults.length > 0 && (
-                    <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderTop: "1px solid #ddd", borderBottom: "1px solid #ddd" }}>
-                      Games
-                    </div>
-                  )}
+                  <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderBottom: "1px solid #ddd" }}>
+                    Games
+                  </div>
                   {gameSearchResults.map((game) => {
                     const textBeforeCursor = input.substring(0, cursorPosition);
                     const lastAtIndex = textBeforeCursor.lastIndexOf('@');
@@ -1514,6 +1498,56 @@ function PistaChat({ user }) {
                             ))}
                           </div>
                         )}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+              
+              {/* Features section - shown after games, ordered: mechanics, categories, designers, artists */}
+              {featureSearchResults.length > 0 && (
+                <>
+                  {gameSearchResults.length > 0 && (
+                    <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderTop: "1px solid #ddd", borderBottom: "1px solid #ddd" }}>
+                      Features
+                    </div>
+                  )}
+                  {!gameSearchResults.length && (
+                    <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderBottom: "1px solid #ddd" }}>
+                      Features
+                    </div>
+                  )}
+                  {featureSearchResults.map((feature) => {
+                    const textBeforeCursor = input.substring(0, cursorPosition);
+                    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+                    const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
+                    
+                    const highlightMatch = (text, query) => {
+                      if (!query) return text;
+                      const words = query.split(/\s+/).filter(w => w.length > 0);
+                      if (words.length === 0) return text;
+                      const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+                      const regex = new RegExp(`(${pattern})`, 'gi');
+                      const parts = text.split(regex);
+                      return parts.map((part, idx) => 
+                        regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
+                      );
+                    };
+                    
+                    return (
+                      <div
+                        key={`${feature.type}-${feature.id}`}
+                        className="game-search-item feature-search-item"
+                        onClick={() => selectFeature(feature)}
+                        style={{ paddingLeft: "2rem" }}
+                      >
+                        <div>
+                          <span style={{ marginRight: "0.5rem" }}>{feature.icon}</span>
+                          <span style={{ fontWeight: "500" }}>{highlightMatch(feature.name, query)}</span>
+                          <span style={{ fontSize: "0.85rem", opacity: 0.7, marginLeft: "0.5rem" }}>
+                            ({feature.type})
+                          </span>
+                        </div>
                       </div>
                     );
                   })}
@@ -1756,6 +1790,65 @@ function PistaChat({ user }) {
                   disabled={gameChips.length === 0}
                 >
                   📖
+                </button>
+                {/* Scoring pad button */}
+                <button
+                  onClick={async () => {
+                    // Get current game context
+                    const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
+                    const currentContext = input.trim() || null;
+                    
+                    if (!lastGameId) {
+                      alert("Please select a game first to open scoring pad");
+                      return;
+                    }
+                    
+                    try {
+                      const res = await fetch(`${API_BASE}/scoring/pad`, {
+                        method: "POST",
+                        headers: {
+                          ...authService.getAuthHeaders(),
+                          "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                          game_id: lastGameId,
+                          context: currentContext,
+                        }),
+                      });
+                      
+                      const data = await res.json();
+                      
+                      if (data.success && data.fake_door) {
+                        // Show fake-door message
+                        alert(data.message);
+                      } else if (data.exists && data.mechanism) {
+                        // Open scoring pad component
+                        setScoringPadGame({ id: lastGameId, name: gameChips[0].name, mechanism: data.mechanism });
+                      } else {
+                        alert("Scoring mechanism not available for this game yet.");
+                      }
+                    } catch (err) {
+                      console.error("Scoring pad failed:", err);
+                      alert("Failed to open scoring pad");
+                    }
+                  }}
+                  style={{ 
+                    padding: "0.5rem", 
+                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed", 
+                    border: "1px solid #ddd", 
+                    borderRadius: "4px",
+                    backgroundColor: gameChips.length > 0 ? "var(--bg-secondary, #f5f5f5)" : "var(--bg-disabled, #e0e0e0)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    minWidth: "40px",
+                    height: "40px",
+                    opacity: gameChips.length > 0 ? 1 : 0.5
+                  }}
+                  title={gameChips.length > 0 ? "End-game scoring pad" : "Select a game first using @ mention"}
+                  disabled={gameChips.length === 0}
+                >
+                  📊
                 </button>
               </div>
             </div>

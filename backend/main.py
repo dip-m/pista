@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
-from .db import db_connection, DB_PATH, ensure_schema, DB_TYPE, DATABASE_URL, get_connection, put_connection, execute_query
+from .db import db_connection, DB_PATH, ensure_schema, DB_TYPE, DATABASE_URL, get_connection, put_connection, execute_query, get_db_connection
 # Import psycopg2 errors for PostgreSQL error handling
 try:
     import psycopg2
@@ -653,115 +653,137 @@ def compare_two_games(engine: SimilarityEngine, game_a_id: Any, game_b_id: Any) 
 @app.post("/auth/oauth/callback")
 def oauth_callback(req: OAuthCallbackRequest):
     """Handle OAuth callback from Google, Microsoft, or Meta."""
-    if req.provider not in ["google", "microsoft", "meta"]:
-        raise HTTPException(status_code=400, detail="Invalid OAuth provider")
-    
-    # Verify token and get user info
-    user_info = None
-    if req.provider == "google":
-        user_info = verify_google_token(req.token)
-    elif req.provider == "microsoft":
-        user_info = verify_microsoft_token(req.token)
-    elif req.provider == "meta":
-        user_info = verify_meta_token(req.token)
-    
-    if not user_info:
-        raise HTTPException(status_code=401, detail="Invalid OAuth token")
-    
-    oauth_id = user_info.get("oauth_id")
-    email = user_info.get("email") or req.email
-    username = user_info.get("username") or req.name or email
-    
-    if not oauth_id:
-        raise HTTPException(status_code=400, detail="OAuth ID not found")
-    
-    # Check if user exists
-    query = "SELECT id, email, username, is_admin FROM users WHERE oauth_provider = ? AND oauth_id = ?"
-    if DB_TYPE == "postgres":
-        query = query.replace("?", "%s")
-    cur = execute_query(ENGINE_CONN, query, (req.provider, oauth_id))
-    user = cur.fetchone()
-    
-    is_new_user = False
-    if user:
-        # Existing user - login
-        user_id = user[0]
-        is_admin = user[3] if len(user) > 3 else False
-        if isinstance(is_admin, int):
-            is_admin = bool(is_admin)
-    else:
-        # New user - create account (username is NULL initially, user will set it in profile)
-        is_new_user = True
+    # Get a fresh connection from the pool for this request
+    conn = get_db_connection()
+    try:
+        if req.provider not in ["google", "microsoft", "meta"]:
+            raise HTTPException(status_code=400, detail="Invalid OAuth provider")
+        
+        # Verify token and get user info
+        user_info = None
+        if req.provider == "google":
+            user_info = verify_google_token(req.token)
+        elif req.provider == "microsoft":
+            user_info = verify_microsoft_token(req.token)
+        elif req.provider == "meta":
+            user_info = verify_meta_token(req.token)
+        
+        if not user_info:
+            raise HTTPException(status_code=401, detail="Invalid OAuth token")
+        
+        oauth_id = user_info.get("oauth_id")
+        email = user_info.get("email") or req.email
+        username = user_info.get("username") or req.name or email
+        
+        if not oauth_id:
+            raise HTTPException(status_code=400, detail="OAuth ID not found")
+        
+        # Check if user exists
+        query = "SELECT id, email, username, is_admin FROM users WHERE oauth_provider = ? AND oauth_id = ?"
         if DB_TYPE == "postgres":
-            # Get next ID for PostgreSQL (since id is INTEGER PRIMARY KEY, not SERIAL)
-            id_query = "SELECT COALESCE(MAX(id), 0) + 1 FROM users"
-            cur = execute_query(ENGINE_CONN, id_query)
-            next_id = cur.fetchone()[0]
-            
-            insert_query = """INSERT INTO users (id, email, username, oauth_provider, oauth_id) 
-                             VALUES (%s, %s, %s, %s, %s) RETURNING id"""
-            cur = execute_query(ENGINE_CONN, insert_query, (next_id, email, None, req.provider, oauth_id))
-            user_id = cur.fetchone()[0]
+            query = query.replace("?", "%s")
+        cur = execute_query(conn, query, (req.provider, oauth_id))
+        user = cur.fetchone()
+        
+        is_new_user = False
+        if user:
+            # Existing user - login
+            user_id = user[0]
+            is_admin = user[3] if len(user) > 3 else False
+            if isinstance(is_admin, int):
+                is_admin = bool(is_admin)
         else:
-            insert_query = """INSERT INTO users (email, username, oauth_provider, oauth_id) 
-                             VALUES (?, ?, ?, ?)"""
-            cur = execute_query(ENGINE_CONN, insert_query, (email, None, req.provider, oauth_id))
-            user_id = cur.lastrowid
-        ENGINE_CONN.commit()
-        is_admin = False
-    
-    access_token = create_access_token(data={"sub": str(user_id)})
-    return {"access_token": access_token, "token_type": "bearer", "user_id": user_id, "is_new_user": is_new_user}
+            # New user - create account (username is NULL initially, user will set it in profile)
+            is_new_user = True
+            if DB_TYPE == "postgres":
+                # Get next ID for PostgreSQL (since id is INTEGER PRIMARY KEY, not SERIAL)
+                id_query = "SELECT COALESCE(MAX(id), 0) + 1 FROM users"
+                cur = execute_query(conn, id_query)
+                next_id = cur.fetchone()[0]
+                
+                insert_query = """INSERT INTO users (id, email, username, oauth_provider, oauth_id) 
+                                 VALUES (%s, %s, %s, %s, %s) RETURNING id"""
+                cur = execute_query(conn, insert_query, (next_id, email, None, req.provider, oauth_id))
+                user_id = cur.fetchone()[0]
+            else:
+                insert_query = """INSERT INTO users (email, username, oauth_provider, oauth_id) 
+                                 VALUES (?, ?, ?, ?)"""
+                cur = execute_query(conn, insert_query, (email, None, req.provider, oauth_id))
+                user_id = cur.lastrowid
+            conn.commit()
+            is_admin = False
+        
+        access_token = create_access_token(data={"sub": str(user_id)})
+        return {"access_token": access_token, "token_type": "bearer", "user_id": user_id, "is_new_user": is_new_user}
+    finally:
+        # Return connection to pool if PostgreSQL
+        if DB_TYPE == "postgres":
+            put_connection(conn)
 
 
 @app.post("/auth/email/register")
 def email_register(req: EmailRegisterRequest):
     """Register a new user with email (restricted to email provider only)."""
-    # Check if email exists
-    query = "SELECT id FROM users WHERE email = ?"
-    if DB_TYPE == "postgres":
-        query = query.replace("?", "%s")
-    cur = execute_query(ENGINE_CONN, query, (req.email,))
-    if cur.fetchone():
-        raise HTTPException(status_code=400, detail="Email already exists")
-    
-    # Create user with email provider - username is NULL initially, user will set it in profile
-    password_hash = hash_password(req.password)
-    if DB_TYPE == "postgres":
-        # Get next ID for PostgreSQL (since id is INTEGER PRIMARY KEY, not SERIAL)
-        id_query = "SELECT COALESCE(MAX(id), 0) + 1 FROM users"
-        cur = execute_query(ENGINE_CONN, id_query)
-        next_id = cur.fetchone()[0]
+    # Get a fresh connection from the pool for this request
+    conn = get_db_connection()
+    try:
+        # Check if email exists
+        query = "SELECT id FROM users WHERE email = ?"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(conn, query, (req.email,))
+        if cur.fetchone():
+            raise HTTPException(status_code=400, detail="Email already exists")
         
-        insert_query = """INSERT INTO users (id, email, username, oauth_provider, password_hash) 
-                         VALUES (%s, %s, %s, 'email', %s) RETURNING id"""
-        cur = execute_query(ENGINE_CONN, insert_query, (next_id, req.email, None, password_hash))
-        user_id = cur.fetchone()[0]
-    else:
-        insert_query = """INSERT INTO users (email, username, oauth_provider, password_hash) 
-                         VALUES (?, ?, 'email', ?)"""
-        cur = execute_query(ENGINE_CONN, insert_query, (req.email, None, password_hash))
-        user_id = cur.lastrowid
-    ENGINE_CONN.commit()
-    
-    access_token = create_access_token(data={"sub": str(user_id)})
-    return {"access_token": access_token, "token_type": "bearer", "user_id": user_id}
+        # Create user with email provider - username is NULL initially, user will set it in profile
+        password_hash = hash_password(req.password)
+        if DB_TYPE == "postgres":
+            # Get next ID for PostgreSQL (since id is INTEGER PRIMARY KEY, not SERIAL)
+            id_query = "SELECT COALESCE(MAX(id), 0) + 1 FROM users"
+            cur = execute_query(conn, id_query)
+            next_id = cur.fetchone()[0]
+            
+            insert_query = """INSERT INTO users (id, email, username, oauth_provider, password_hash) 
+                             VALUES (%s, %s, %s, 'email', %s) RETURNING id"""
+            cur = execute_query(conn, insert_query, (next_id, req.email, None, password_hash))
+            user_id = cur.fetchone()[0]
+        else:
+            insert_query = """INSERT INTO users (email, username, oauth_provider, password_hash) 
+                             VALUES (?, ?, 'email', ?)"""
+            cur = execute_query(conn, insert_query, (req.email, None, password_hash))
+            user_id = cur.lastrowid
+        
+        conn.commit()
+        
+        access_token = create_access_token(data={"sub": str(user_id)})
+        return {"access_token": access_token, "token_type": "bearer", "user_id": user_id}
+    finally:
+        # Return connection to pool if PostgreSQL
+        if DB_TYPE == "postgres":
+            put_connection(conn)
 
 
 @app.post("/auth/email/login")
 def email_login(req: EmailLoginRequest):
     """Login with email and password."""
-    query = "SELECT id, password_hash, bgg_id, is_admin FROM users WHERE email = ? AND oauth_provider = 'email'"
-    if DB_TYPE == "postgres":
-        query = query.replace("?", "%s")
-    cur = execute_query(ENGINE_CONN, query, (req.email,))
-    user = cur.fetchone()
-    
-    if not user or not verify_password(req.password, user[1]):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    
-    access_token = create_access_token(data={"sub": str(user[0])})
-    return {"access_token": access_token, "token_type": "bearer", "user_id": user[0]}
+    # Get a fresh connection from the pool for this request
+    conn = get_db_connection()
+    try:
+        query = "SELECT id, password_hash, bgg_id, is_admin FROM users WHERE email = ? AND oauth_provider = 'email'"
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        cur = execute_query(conn, query, (req.email,))
+        user = cur.fetchone()
+        
+        if not user or not verify_password(req.password, user[1]):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        access_token = create_access_token(data={"sub": str(user[0])})
+        return {"access_token": access_token, "token_type": "bearer", "user_id": user[0]}
+    finally:
+        # Return connection to pool if PostgreSQL
+        if DB_TYPE == "postgres":
+            put_connection(conn)
 
 
 @app.get("/auth/me", response_model=UserResponse)
@@ -1006,56 +1028,28 @@ def search_games(q: str, limit: int = 10):
         for row in cur.fetchall():
             if row[0] not in seen_ids:
                 game_id = row[0]
-                # Get features for this game to show in search results
+                # Get features for this game to show in search results (optimized - single query)
                 features = []
                 try:
-                    # Get mechanics
-                    cur_m = execute_query(
+                    # Single query to get all features at once for better performance
+                    cur_f = execute_query(
                         ENGINE_CONN,
-                        """SELECT m.name FROM mechanics m
-                           JOIN game_mechanics gm ON gm.mechanic_id = m.id
-                           WHERE gm.game_id = ? LIMIT 3""",
-                        (game_id,)
+                        """SELECT 'mechanics' as type, m.name, '⚙️' as icon
+                           FROM mechanics m JOIN game_mechanics gm ON gm.mechanic_id = m.id WHERE gm.game_id = ?
+                           UNION ALL
+                           SELECT 'categories' as type, c.name, '🏷️' as icon
+                           FROM categories c JOIN game_categories gc ON gc.category_id = c.id WHERE gc.game_id = ?
+                           UNION ALL
+                           SELECT 'designers' as type, d.name, '👤' as icon
+                           FROM designers d JOIN game_designers gd ON gd.designer_id = d.id WHERE gd.game_id = ?
+                           UNION ALL
+                           SELECT 'artists' as type, a.name, '🎨' as icon
+                           FROM artists a JOIN game_artists ga ON ga.artist_id = a.id WHERE ga.game_id = ?
+                           LIMIT 5""",
+                        (game_id, game_id, game_id, game_id)
                     )
-                    mechanics_rows = cur_m.fetchall() if cur_m else []
-                    mechanics = [r[0] for r in mechanics_rows if len(r) > 0]
-                    features.extend([("⚙️", m) for m in mechanics])
-                    
-                    # Get categories
-                    cur_c = execute_query(
-                        ENGINE_CONN,
-                        """SELECT c.name FROM categories c
-                           JOIN game_categories gc ON gc.category_id = c.id
-                           WHERE gc.game_id = ? LIMIT 2""",
-                        (game_id,)
-                    )
-                    rows = cur_c.fetchall() if cur_c else []
-                    categories = [r[0] for r in rows if len(r) > 0] if rows else []
-                    features.extend([("🏷️", c) for c in categories])
-                    
-                    # Get designers
-                    cur_d = execute_query(
-                        ENGINE_CONN,
-                        """SELECT d.name FROM designers d
-                           JOIN game_designers gd ON gd.designer_id = d.id
-                           WHERE gd.game_id = ? LIMIT 2""",
-                        (game_id,)
-                    )
-                    designers_rows = cur_d.fetchall() if cur_d else []
-                    designers = [r[0] for r in designers_rows if len(r) > 0]
-                    features.extend([("👤", d) for d in designers])
-                    
-                    # Get publishers
-                    cur_p = execute_query(
-                        ENGINE_CONN,
-                        """SELECT p.name FROM publishers p
-                           JOIN game_publishers gp ON gp.publisher_id = p.id
-                           WHERE gp.game_id = ? LIMIT 2""",
-                        (game_id,)
-                    )
-                    publishers_rows = cur_p.fetchall() if cur_p else []
-                    publishers = [r[0] for r in publishers_rows if len(r) > 0]
-                    features.extend([("🏢", p) for p in publishers])
+                    feature_rows = cur_f.fetchall() if cur_f else []
+                    features = [(r[2], r[1]) for r in feature_rows if len(r) >= 3]
                 except Exception as e:
                     logger.error(f"Error fetching features for game {game_id}: {e}")
                     pass
@@ -1067,7 +1061,7 @@ def search_games(q: str, limit: int = 10):
                     "thumbnail": row[3],
                     "average_rating": row[4],
                     "num_ratings": row[5],
-                    "features": features
+                    "features": features[:5]  # Limit to 5 features for performance
                 })
                 seen_ids.add(game_id)
                 if len(game_results) >= limit:
@@ -1139,6 +1133,27 @@ def search_games(q: str, limit: int = 10):
                     })
         except Exception as e:
             logger.error(f"Error searching designers: {e}")
+        
+        # Search artists
+        try:
+            cur_a = execute_query(
+                ENGINE_CONN,
+                """SELECT DISTINCT id, name FROM artists 
+                   WHERE LOWER(name) LIKE LOWER(?) 
+                   ORDER BY name LIMIT ?""",
+                (search_pattern, feature_limit)
+            )
+            artists_rows = cur_a.fetchall()
+            for row in artists_rows:
+                if len(row) >= 2:
+                    feature_results.append({
+                        "type": "artists",
+                        "id": row[0],
+                        "name": row[1],
+                        "icon": "🎨"
+                    })
+        except Exception as e:
+            logger.error(f"Error searching artists: {e}")
         
         # Search publishers
         try:
@@ -2262,6 +2277,454 @@ def explain_rules(
     except Exception as e:
         logger.error(f"Error storing rules explainer interaction: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to process request: {str(e)}")
+
+
+# Scoring endpoints
+class ScoringPadRequest(BaseModel):
+    game_id: int
+    context: Optional[str] = None
+
+class CalculateScoreRequest(BaseModel):
+    game_id: int
+    mechanism_id: int
+    intermediate_scores: Dict[str, Any]  # Dictionary of score_id -> value
+
+class SaveScoringSessionRequest(BaseModel):
+    game_id: int
+    mechanism_id: int
+    intermediate_scores: Dict[str, Any]
+    final_score: Optional[float] = None
+
+@app.post("/scoring/pad")
+def open_scoring_pad(
+    req: ScoringPadRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """Fake-door: Store scoring pad interaction for later analysis."""
+    user_id = current_user["id"] if current_user else None
+    logger.info(f"Scoring pad fake-door request from user: {user_id or 'anonymous'}, game_id: {req.game_id}")
+    
+    try:
+        # Get game name for context
+        game_name = None
+        try:
+            cur = execute_query(ENGINE_CONN, "SELECT name FROM games WHERE id = ?", (req.game_id,))
+            row = cur.fetchone()
+            if row:
+                game_name = row[0]
+        except:
+            pass
+        
+        # Store interaction data
+        interaction_context = {
+            "game_id": req.game_id,
+            "game_name": game_name,
+            "context": req.context,
+            "user_id": user_id
+        }
+        
+        metadata = {
+            "game_id": req.game_id,
+            "game_name": game_name
+        }
+        
+        # Store in fake_door_interactions table
+        insert_sql = """INSERT INTO fake_door_interactions (user_id, interaction_type, context, metadata)
+                       VALUES (?, ?, ?, ?)"""
+        if DB_TYPE == "postgres":
+            insert_sql = insert_sql.replace("?", "%s")
+        
+        execute_query(
+            ENGINE_CONN,
+            insert_sql,
+            (
+                user_id,
+                "scoring_pad",
+                json.dumps(interaction_context),
+                json.dumps(metadata)
+            )
+        )
+        ENGINE_CONN.commit()
+        
+        logger.info(f"Stored scoring pad fake-door interaction for user {user_id}, game_id: {req.game_id}")
+        
+        # Return success message (fake-door)
+        game_name_text = f" for {game_name}" if game_name else ""
+        return {
+            "success": True,
+            "message": f"Thank you for your interest! End-game scoring{game_name_text} is coming soon. We've recorded your request and will notify you when it's available.",
+            "fake_door": True
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error storing scoring pad interaction: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to process request: {str(e)}")
+
+
+@app.get("/scoring/mechanism/{game_id}")
+def get_scoring_mechanism(
+    game_id: int,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """Get the approved scoring mechanism for a game."""
+    try:
+        # Get approved mechanism for this game
+        query = """SELECT id, criteria_json, created_at 
+                   FROM scoring_mechanisms 
+                   WHERE game_id = ? AND status = 'approved'
+                   ORDER BY created_at DESC LIMIT 1"""
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        
+        cur = execute_query(ENGINE_CONN, query, (game_id,))
+        row = cur.fetchone()
+        
+        if not row:
+            return {
+                "exists": False,
+                "mechanism": None
+            }
+        
+        mechanism_id = row[0]
+        criteria_json = row[1]
+        
+        try:
+            criteria = json.loads(criteria_json)
+        except:
+            criteria = {}
+        
+        return {
+            "exists": True,
+            "mechanism": {
+                "id": mechanism_id,
+                "game_id": game_id,
+                "criteria": criteria,
+                "created_at": row[2].isoformat() if hasattr(row[2], 'isoformat') else str(row[2])
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting scoring mechanism: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get scoring mechanism: {str(e)}")
+
+
+@app.post("/scoring/calculate")
+def calculate_score(
+    req: CalculateScoreRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """Calculate final score from intermediate scores."""
+    user_id = current_user["id"] if current_user else None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    try:
+        # Get the scoring mechanism
+        query = """SELECT criteria_json FROM scoring_mechanisms 
+                   WHERE id = ? AND status = 'approved'"""
+        if DB_TYPE == "postgres":
+            query = query.replace("?", "%s")
+        
+        cur = execute_query(ENGINE_CONN, query, (req.mechanism_id,))
+        row = cur.fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Scoring mechanism not found or not approved")
+        
+        criteria = json.loads(row[0])
+        intermediate_scores_list = criteria.get("intermediate_scores", [])
+        
+        # Calculate intermediate scores
+        calculated_intermediates = []
+        total_score = 0.0
+        
+        for score_def in intermediate_scores_list:
+            score_id = score_def.get("id")
+            label = score_def.get("label", "")
+            formula = score_def.get("formula", "value")
+            input_value = req.intermediate_scores.get(score_id, 0)
+            
+            # Simple formula evaluation (can be extended)
+            if formula == "value":
+                calculated_value = float(input_value)
+            elif formula.startswith("value *") or formula.startswith("value*"):
+                multiplier = float(formula.split("*")[-1].strip())
+                calculated_value = float(input_value) * multiplier
+            elif "*" in formula:
+                # Try to extract multiplier
+                parts = formula.split("*")
+                if len(parts) == 2:
+                    try:
+                        multiplier = float(parts[1].strip())
+                        calculated_value = float(input_value) * multiplier
+                    except:
+                        calculated_value = float(input_value)
+                else:
+                    calculated_value = float(input_value)
+            else:
+                calculated_value = float(input_value)
+            
+            calculated_intermediates.append({
+                "id": score_id,
+                "label": label,
+                "value": calculated_value,
+                "input_value": input_value
+            })
+            total_score += calculated_value
+        
+        # Apply final score formula
+        final_formula = criteria.get("final_score_formula", "sum")
+        if final_formula == "sum":
+            final_score = total_score
+        else:
+            final_score = total_score  # Default to sum
+        
+        return {
+            "success": True,
+            "intermediate_scores": calculated_intermediates,
+            "final_score": final_score
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error calculating score: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to calculate score: {str(e)}")
+
+
+@app.post("/scoring/save")
+def save_scoring_session(
+    req: SaveScoringSessionRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """Save a scoring session for a user."""
+    user_id = current_user["id"] if current_user else None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    try:
+        # Calculate final score if not provided
+        final_score = req.final_score
+        if final_score is None:
+            # Sum all intermediate scores
+            final_score = sum(float(v) for v in req.intermediate_scores.values())
+        
+        # Save to database
+        insert_sql = """INSERT INTO user_scoring_sessions 
+                       (user_id, game_id, mechanism_id, intermediate_scores_json, final_score, updated_at)
+                       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"""
+        if DB_TYPE == "postgres":
+            insert_sql = insert_sql.replace("?", "%s")
+        
+        execute_query(
+            ENGINE_CONN,
+            insert_sql,
+            (
+                user_id,
+                req.game_id,
+                req.mechanism_id,
+                json.dumps(req.intermediate_scores),
+                final_score
+            )
+        )
+        ENGINE_CONN.commit()
+        
+        return {
+            "success": True,
+            "message": "Scoring session saved successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error saving scoring session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save scoring session: {str(e)}")
+
+
+# Admin endpoints for scoring mechanism review
+class ReviewScoringMechanismRequest(BaseModel):
+    mechanism_id: int
+    status: str  # 'approved' or 'rejected'
+    review_notes: Optional[str] = None
+
+@app.post("/admin/scoring/parse-rulebook")
+def parse_rulebook_for_scoring(
+    game_id: int,
+    rulebook_text: str,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Parse a rulebook and create a pending scoring mechanism. Admin only."""
+    try:
+        from backend.rulebook_parser import extract_scoring_from_rulebook
+        
+        # Extract scoring mechanism
+        mechanism_data = extract_scoring_from_rulebook(game_id, rulebook_text)
+        
+        if not mechanism_data:
+            return {
+                "success": False,
+                "message": "Could not extract scoring criteria from rulebook. Confidence too low or no criteria found."
+            }
+        
+        # Check if mechanism already exists for this game
+        check_query = """SELECT id FROM scoring_mechanisms WHERE game_id = ? AND status = 'pending'"""
+        if DB_TYPE == "postgres":
+            check_query = check_query.replace("?", "%s")
+        
+        cur = execute_query(ENGINE_CONN, check_query, (game_id,))
+        existing = cur.fetchone()
+        
+        if existing:
+            # Update existing pending mechanism
+            update_query = """UPDATE scoring_mechanisms 
+                             SET criteria_json = ?, created_at = CURRENT_TIMESTAMP
+                             WHERE id = ?"""
+            if DB_TYPE == "postgres":
+                update_query = update_query.replace("?", "%s")
+            
+            execute_query(ENGINE_CONN, update_query, (mechanism_data["criteria_json"], existing[0]))
+            mechanism_id = existing[0]
+        else:
+            # Insert new mechanism
+            insert_query = """INSERT INTO scoring_mechanisms (game_id, criteria_json, status)
+                             VALUES (?, ?, ?)"""
+            if DB_TYPE == "postgres":
+                insert_query = insert_query.replace("?", "%s")
+            
+            cur = execute_query(ENGINE_CONN, insert_query, (
+                game_id,
+                mechanism_data["criteria_json"],
+                "pending"
+            ))
+            ENGINE_CONN.commit()
+            
+            # Get the inserted ID
+            if DB_TYPE == "postgres":
+                cur = execute_query(ENGINE_CONN, "SELECT LASTVAL()", ())
+            else:
+                cur = execute_query(ENGINE_CONN, "SELECT LAST_INSERT_ROWID()", ())
+            mechanism_id = cur.fetchone()[0]
+        
+        ENGINE_CONN.commit()
+        
+        return {
+            "success": True,
+            "mechanism_id": mechanism_id,
+            "confidence": mechanism_data.get("confidence", 0.0),
+            "message": "Scoring mechanism created and pending review"
+        }
+    except Exception as e:
+        logger.error(f"Error parsing rulebook for scoring: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to parse rulebook: {str(e)}")
+
+
+@app.get("/admin/scoring/pending")
+def get_pending_scoring_mechanisms(
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Get all pending scoring mechanisms for admin review. Admin only."""
+    try:
+        query = """SELECT sm.id, sm.game_id, g.name as game_name, sm.criteria_json, sm.created_at
+                   FROM scoring_mechanisms sm
+                   JOIN games g ON g.id = sm.game_id
+                   WHERE sm.status = 'pending'
+                   ORDER BY sm.created_at DESC"""
+        
+        cur = execute_query(ENGINE_CONN, query, ())
+        mechanisms = []
+        
+        for row in cur.fetchall():
+            try:
+                criteria = json.loads(row[3])
+            except:
+                criteria = {}
+            
+            mechanisms.append({
+                "id": row[0],
+                "game_id": row[1],
+                "game_name": row[2],
+                "criteria": criteria,
+                "created_at": row[4].isoformat() if hasattr(row[4], 'isoformat') else str(row[4])
+            })
+        
+        return {
+            "success": True,
+            "mechanisms": mechanisms
+        }
+    except Exception as e:
+        logger.error(f"Error getting pending scoring mechanisms: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get pending mechanisms: {str(e)}")
+
+
+@app.post("/admin/scoring/review")
+def review_scoring_mechanism(
+    req: ReviewScoringMechanismRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_admin_user)
+):
+    """Review and approve/reject a scoring mechanism. Admin only."""
+    if req.status not in ["approved", "rejected"]:
+        raise HTTPException(status_code=400, detail="Status must be 'approved' or 'rejected'")
+    
+    try:
+        admin_user_id = current_user["id"]
+        
+        # If approving, check if there's already an approved mechanism for this game
+        if req.status == "approved":
+            # Get game_id from mechanism
+            get_game_query = "SELECT game_id FROM scoring_mechanisms WHERE id = ?"
+            if DB_TYPE == "postgres":
+                get_game_query = get_game_query.replace("?", "%s")
+            
+            cur = execute_query(ENGINE_CONN, get_game_query, (req.mechanism_id,))
+            game_row = cur.fetchone()
+            
+            if not game_row:
+                raise HTTPException(status_code=404, detail="Scoring mechanism not found")
+            
+            game_id = game_row[0]
+            
+            # Check for existing approved mechanism
+            check_query = """SELECT id FROM scoring_mechanisms 
+                           WHERE game_id = ? AND status = 'approved' AND id != ?"""
+            if DB_TYPE == "postgres":
+                check_query = check_query.replace("?", "%s")
+            
+            cur = execute_query(ENGINE_CONN, check_query, (game_id, req.mechanism_id))
+            existing = cur.fetchone()
+            
+            if existing:
+                # Reject the old approved mechanism
+                update_old_query = """UPDATE scoring_mechanisms 
+                                     SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP, 
+                                         reviewed_by = ?, review_notes = 'Replaced by new approved mechanism'
+                                     WHERE id = ?"""
+                if DB_TYPE == "postgres":
+                    update_old_query = update_old_query.replace("?", "%s")
+                
+                execute_query(ENGINE_CONN, update_old_query, (admin_user_id, existing[0]))
+        
+        # Update the mechanism status
+        update_query = """UPDATE scoring_mechanisms 
+                         SET status = ?, reviewed_at = CURRENT_TIMESTAMP, 
+                             reviewed_by = ?, review_notes = ?
+                         WHERE id = ?"""
+        if DB_TYPE == "postgres":
+            update_query = update_query.replace("?", "%s")
+        
+        execute_query(ENGINE_CONN, update_query, (
+            req.status,
+            admin_user_id,
+            req.review_notes,
+            req.mechanism_id
+        ))
+        ENGINE_CONN.commit()
+        
+        return {
+            "success": True,
+            "message": f"Scoring mechanism {req.status} successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reviewing scoring mechanism: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to review mechanism: {str(e)}")
 
 
 @app.get("/games/{game_id}/features")

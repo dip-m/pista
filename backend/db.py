@@ -102,6 +102,41 @@ def put_connection(conn):
     else:
         conn.close()
 
+def get_db_connection():
+    """
+    Get a database connection for request handling.
+    For PostgreSQL, gets a connection from the pool.
+    For SQLite, returns the global ENGINE_CONN (which is thread-safe for reads).
+    This should be used as a FastAPI dependency.
+    """
+    if DB_TYPE == "postgres" and DATABASE_URL:
+        if not PSYCOPG2_AVAILABLE:
+            raise Exception("psycopg2 is required for PostgreSQL")
+        pool = get_postgres_pool()
+        if pool:
+            conn = pool.getconn()
+            try:
+                # Test if connection is still alive
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+                return conn
+            except (psycopg2.InterfaceError, psycopg2.OperationalError):
+                # Connection is dead, get a new one
+                try:
+                    pool.putconn(conn, close=True)
+                except:
+                    pass
+                return pool.getconn()
+        raise Exception("PostgreSQL connection pool not available")
+    else:
+        # For SQLite, we need to access ENGINE_CONN but avoid circular import
+        # Use a lazy import pattern
+        import backend.main
+        if backend.main.ENGINE_CONN is None:
+            raise Exception("Database connection not initialized")
+        return backend.main.ENGINE_CONN
+
 def execute_query(conn, query: str, params: tuple = None):
     """Execute a query with proper parameter placeholders."""
     if DB_TYPE == "postgres":
