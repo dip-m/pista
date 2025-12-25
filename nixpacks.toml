@@ -1,6 +1,7 @@
 # Nixpacks configuration for Railway
 # This tells Railway to build only the Python backend, not the frontend
 # Force Python provider to ensure pip is available
+# Use virtual environment to work around Nix's immutable filesystem
 
 providers = ["python"]
 
@@ -9,13 +10,14 @@ nixPkgs = ["python311"]
 
 [phases.install]
 cmds = [
-  "python3 -m ensurepip --upgrade",
-  "python3 -m pip install --no-cache-dir -r requirements-deploy.txt"
+  "python3 -m venv /opt/venv",
+  "/opt/venv/bin/pip install --upgrade pip",
+  "/opt/venv/bin/pip install --no-cache-dir -r requirements-deploy.txt"
 ]
 
 [phases.build]
 cmds = []
 
 [start]
-cmd = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+cmd = "/opt/venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
 
