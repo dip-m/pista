@@ -37,8 +37,8 @@ Railway offers a more generous free tier ($5/month credit) and no /tmp storage l
 2. **If Railway still tries to build frontend/React:**
    - The `nixpacks.toml` file forces Python-only build (should be auto-detected)
    - The `.railwayignore` file excludes `frontend/` and `src/` directories
-   - If you see "Error reading src/App.jsx", Railway is trying to build React - manually select "Python" in settings
-   - You can also delete/rename the root `src/` directory if it's not needed (it appears to be old code)
+   - The root `src/` directory has been renamed to `src_old_backup/` to prevent Railway from detecting React
+   - If you still see "Error reading src/App.jsx", manually select "Python" as the service type in Railway settings
 
 ### 4. Set Environment Variables
 
