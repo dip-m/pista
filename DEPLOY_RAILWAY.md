@@ -25,14 +25,20 @@ Railway offers a more generous free tier ($5/month credit) and no /tmp storage l
 
 ### 3. Configure Service
 
-Railway should automatically:
-- Detect Python from `railway.json`
-- Use the build command: `pip install --no-cache-dir -r requirements-deploy.txt`
-- Use the start command: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+**CRITICAL:** Railway may detect both frontend (React) and backend (Python). To ensure it builds only the backend:
 
-If not, manually set:
-- **Build Command**: `pip install --no-cache-dir -r requirements-deploy.txt`
-- **Start Command**: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+1. **In Railway Dashboard:**
+   - Go to your service → "Settings" → "Build & Deploy"
+   - **Service Type**: Select "Python" (or let it auto-detect from `nixpacks.toml`)
+   - **Build Command**: `pip install --no-cache-dir -r requirements-deploy.txt`
+   - **Start Command**: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`
+   - **Root Directory**: Leave empty (or set to `.`)
+
+2. **If Railway still tries to build frontend/React:**
+   - The `nixpacks.toml` file forces Python-only build (should be auto-detected)
+   - The `.railwayignore` file excludes `frontend/` and `src/` directories
+   - If you see "Error reading src/App.jsx", Railway is trying to build React - manually select "Python" in settings
+   - You can also delete/rename the root `src/` directory if it's not needed (it appears to be old code)
 
 ### 4. Set Environment Variables
 

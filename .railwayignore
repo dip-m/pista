@@ -1,0 +1,13 @@
+# Railway ignore file - exclude frontend and old src directory
+# Railway should only build the Python backend
+
+frontend/
+src/
+node_modules/
+venv/
+gen/
+*.db
+*.index
+*.faiss
+yolov8n.pt
+

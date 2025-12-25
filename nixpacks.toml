@@ -1,0 +1,21 @@
+# Nixpacks configuration for Railway
+# This tells Railway to build only the Python backend, not the frontend
+
+# Force Python provider, ignore Node.js/React detection
+[providers]
+python = true
+
+[phases.setup]
+nixPkgs = ["python311"]
+
+[phases.install]
+cmds = [
+  "pip install --no-cache-dir -r requirements-deploy.txt"
+]
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+
