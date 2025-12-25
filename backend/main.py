@@ -692,13 +692,19 @@ def oauth_callback(req: OAuthCallbackRequest):
     else:
         # New user - create account (username is NULL initially, user will set it in profile)
         is_new_user = True
-        insert_query = """INSERT INTO users (email, username, oauth_provider, oauth_id) 
-                         VALUES (?, ?, ?, ?)"""
         if DB_TYPE == "postgres":
-            insert_query = insert_query.replace("?", "%s") + " RETURNING id"
-            cur = execute_query(ENGINE_CONN, insert_query, (email, None, req.provider, oauth_id))
+            # Get next ID for PostgreSQL (since id is INTEGER PRIMARY KEY, not SERIAL)
+            id_query = "SELECT COALESCE(MAX(id), 0) + 1 FROM users"
+            cur = execute_query(ENGINE_CONN, id_query)
+            next_id = cur.fetchone()[0]
+            
+            insert_query = """INSERT INTO users (id, email, username, oauth_provider, oauth_id) 
+                             VALUES (%s, %s, %s, %s, %s) RETURNING id"""
+            cur = execute_query(ENGINE_CONN, insert_query, (next_id, email, None, req.provider, oauth_id))
             user_id = cur.fetchone()[0]
         else:
+            insert_query = """INSERT INTO users (email, username, oauth_provider, oauth_id) 
+                             VALUES (?, ?, ?, ?)"""
             cur = execute_query(ENGINE_CONN, insert_query, (email, None, req.provider, oauth_id))
             user_id = cur.lastrowid
         ENGINE_CONN.commit()
@@ -722,9 +728,14 @@ def email_register(req: EmailRegisterRequest):
     # Create user with email provider - username is NULL initially, user will set it in profile
     password_hash = hash_password(req.password)
     if DB_TYPE == "postgres":
-        insert_query = """INSERT INTO users (email, username, oauth_provider, password_hash) 
-                         VALUES (%s, %s, 'email', %s) RETURNING id"""
-        cur = execute_query(ENGINE_CONN, insert_query, (req.email, None, password_hash))
+        # Get next ID for PostgreSQL (since id is INTEGER PRIMARY KEY, not SERIAL)
+        id_query = "SELECT COALESCE(MAX(id), 0) + 1 FROM users"
+        cur = execute_query(ENGINE_CONN, id_query)
+        next_id = cur.fetchone()[0]
+        
+        insert_query = """INSERT INTO users (id, email, username, oauth_provider, password_hash) 
+                         VALUES (%s, %s, %s, 'email', %s) RETURNING id"""
+        cur = execute_query(ENGINE_CONN, insert_query, (next_id, req.email, None, password_hash))
         user_id = cur.fetchone()[0]
     else:
         insert_query = """INSERT INTO users (email, username, oauth_provider, password_hash) 

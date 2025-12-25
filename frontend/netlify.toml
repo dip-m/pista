@@ -6,6 +6,8 @@
 
 [build.environment]
   NODE_VERSION = "18"
+  # Set this in Netlify dashboard → Site settings → Environment variables
+  # REACT_APP_API_BASE_URL = "https://web-production-f74f5.up.railway.app"
 
 [[redirects]]
   from = "/*"
