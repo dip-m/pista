@@ -3,7 +3,8 @@ services:
     name: pista-backend
     env: python
     # Use --no-cache-dir to prevent pip from using /tmp (free tier has 2GB limit)
-    buildCommand: pip install --no-cache-dir -r update_utils/requirements.txt
+    # Use deployment requirements (excludes heavy ML dependencies not needed at runtime)
+    buildCommand: pip install --no-cache-dir -r requirements-deploy.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
       # Use project directory for model cache (not /tmp) to avoid 2GB limit

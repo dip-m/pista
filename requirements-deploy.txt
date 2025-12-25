@@ -1,0 +1,37 @@
+# Production deployment requirements (without heavy ML dependencies)
+# These are only needed for embedding generation, not runtime
+
+# Core web framework
+fastapi 
+uvicorn[standard]
+PyJWT
+python-multipart
+
+# Database
+psycopg2-binary
+
+# Authentication
+authlib
+
+# Image processing (basic - advanced features are optional)
+Pillow
+
+# Vector search (FAISS - CPU only, smaller than GPU version)
+faiss-cpu
+
+# Utilities
+requests
+numpy
+tqdm
+
+# Note: The following are only needed for embedding generation scripts, not runtime:
+# - sentence-transformers (only in update_utils/embed_games.py)
+# - ultralytics (optional, wrapped in try/except in image_processing.py)
+# - opencv-python (optional, wrapped in try/except in image_processing.py)
+# - pytesseract (optional, wrapped in try/except in image_processing.py)
+# - openai (optional, only if using OpenAI features)
+# - replicate (optional, only if using Replicate features)
+
+# Your backend uses pre-computed FAISS embeddings, so sentence-transformers
+# is not needed at runtime. It's only used for generating embeddings locally.
+
