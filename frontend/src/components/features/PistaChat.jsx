@@ -67,6 +67,7 @@ function PistaChat({ user }) {
   const [activeRequiredFeatures, setActiveRequiredFeatures] = useState([]); // [{type, value, key, messageIndex}, ...] for display in chips
   const [dislikeDetails, setDislikeDetails] = useState({}); // Store additional details for each message
   const [showDislikeInput, setShowDislikeInput] = useState({}); // Track which messages show input
+  const [messageLimitError, setMessageLimitError] = useState(null); // Error message for message limit
   
   // Note: requiredFeatures state is managed via setRequiredFeatures in handleRequireFeature and removeRequiredFeature
 

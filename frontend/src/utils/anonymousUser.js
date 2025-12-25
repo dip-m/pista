@@ -14,9 +14,9 @@ export function getAnonymousUserId() {
     const fingerprint = [
       navigator.userAgent,
       navigator.language,
-      screen.width,
-      screen.height,
-      screen.colorDepth,
+      window.screen.width,
+      window.screen.height,
+      window.screen.colorDepth,
       new Date().getTimezoneOffset(),
       navigator.platform,
       navigator.hardwareConcurrency || 0,

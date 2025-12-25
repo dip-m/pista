@@ -13,6 +13,7 @@ function Login({ onLogin }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState(null);
+  const [rememberMe, setRememberMe] = useState(false);
   
   // Microsoft MSAL hook
   const { instance } = useMsal();
