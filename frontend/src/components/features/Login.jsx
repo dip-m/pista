@@ -31,7 +31,7 @@ function Login({ onLogin }) {
       } else {
         await authService.login(email, password, rememberMe);
       }
-      const userData = await onLogin(isNewUser);
+      await onLogin(isNewUser);
       // Always redirect to chat after login (route will handle profile redirect if needed)
       navigate("/");
     } catch (err) {
@@ -65,7 +65,7 @@ function Login({ onLogin }) {
           userInfo.email,
           userInfo.name
         );
-        const userData = await onLogin(result.is_new_user || false);
+        await onLogin(result.is_new_user || false);
         // Always redirect to chat after login
         navigate("/");
       } catch (err) {
@@ -101,7 +101,7 @@ function Login({ onLogin }) {
         userInfo.mail || userInfo.userPrincipalName,
         userInfo.displayName
       );
-      const userData = await onLogin(result.is_new_user || false);
+      await onLogin(result.is_new_user || false);
       // Always redirect to chat after login
       navigate("/");
     } catch (err) {

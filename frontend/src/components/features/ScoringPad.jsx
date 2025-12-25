@@ -1,5 +1,5 @@
 // frontend/src/components/features/ScoringPad.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
 
@@ -12,14 +12,7 @@ function ScoringPad({ game, onClose }) {
   const [isSaving, setIsSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  useEffect(() => {
-    // Load mechanism if not provided
-    if (!mechanism && game.id) {
-      loadMechanism();
-    }
-  }, [game.id]);
-
-  const loadMechanism = async () => {
+  const loadMechanism = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/scoring/mechanism/${game.id}`, {
         headers: authService.getAuthHeaders(),
@@ -31,7 +24,14 @@ function ScoringPad({ game, onClose }) {
     } catch (err) {
       console.error("Failed to load scoring mechanism:", err);
     }
-  };
+  }, [game.id]);
+
+  useEffect(() => {
+    // Load mechanism if not provided
+    if (!mechanism && game.id) {
+      loadMechanism();
+    }
+  }, [game.id, mechanism, loadMechanism]);
 
   const handleInputChange = (scoreId, value) => {
     setIntermediateScores((prev) => ({

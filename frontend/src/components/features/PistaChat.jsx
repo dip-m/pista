@@ -6,7 +6,7 @@ import { API_BASE } from "../../config/api";
 import Marketplace from "./Marketplace";
 import GameFeaturesEditor from "./GameFeaturesEditor";
 import ScoringPad from "./ScoringPad";
-import { getAnonymousUserId, hasExceededLimit, incrementMessageCount, getRemainingMessages } from "../../utils/anonymousUser";
+import { hasExceededLimit, incrementMessageCount, getRemainingMessages } from "../../utils/anonymousUser";
 
 // Common prompts that can be used as chips
 const COMMON_PROMPTS = [
