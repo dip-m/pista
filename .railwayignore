@@ -4,6 +4,7 @@
 frontend/
 src/
 src_old_backup/
+Dockerfile.backend
 node_modules/
 venv/
 gen/

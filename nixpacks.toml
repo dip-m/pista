@@ -1,12 +1,15 @@
 # Nixpacks configuration for Railway
 # This tells Railway to build only the Python backend, not the frontend
+# Force Python provider to ensure pip is available
+
+providers = ["python"]
 
 [phases.setup]
-nixPkgs = ["python311"]
+nixPkgs = ["python311Full", "pip"]
 
 [phases.install]
 cmds = [
-  "pip install --no-cache-dir -r requirements-deploy.txt"
+  "python -m pip install --no-cache-dir -r requirements-deploy.txt"
 ]
 
 [phases.build]
