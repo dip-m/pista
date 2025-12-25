@@ -6,6 +6,9 @@
 /logs
 name_id_map.json
 /gen
+# Allow FAISS index files for deployment
+!/gen/game_vectors.index
+!/gen/game_ids.json
 /ext_resources
 frontend/src/Read+AI_latest_x64-setup.exe
 /src_old_backup

@@ -40,7 +40,51 @@ Railway offers a more generous free tier ($5/month credit) and no /tmp storage l
    - The root `src/` directory has been renamed to `src_old_backup/` to prevent Railway from detecting React
    - If you still see "Error reading src/App.jsx", manually select "Python" as the service type in Railway settings
 
-### 4. Set Environment Variables
+### 4. Upload FAISS Index Files (Required for Similarity Search)
+
+The FAISS index files (`game_vectors.index` and `game_ids.json`) are required for similarity search functionality. The server will start without them, but similarity search won't work.
+
+**Generate the Index Files Locally:**
+
+First, generate the index files on your local machine:
+```bash
+python update_utils/export_faiss.py \
+  --db gen/bgg_semantic.db \
+  --index-out gen/game_vectors.index \
+  --id-map-out gen/game_ids.json
+```
+
+**Option A: Include in Git Repository (Simplest)**
+
+If the index files are reasonable size (< 100MB), commit them to Git:
+```bash
+git add gen/game_vectors.index gen/game_ids.json
+git commit -m "Add FAISS index files for deployment"
+git push
+```
+Railway will automatically include them in the deployment.
+
+**Option B: Upload via Railway CLI (For Large Files)**
+
+1. Install Railway CLI: `npm i -g @railway/cli`
+2. Login: `railway login`
+3. Link your project: `railway link`
+4. Upload files:
+   ```bash
+   railway run --service <your-service-name> -- mkdir -p /app/gen
+   railway run --service <your-service-name> -- cp gen/game_vectors.index /app/gen/
+   railway run --service <your-service-name> -- cp gen/game_ids.json /app/gen/
+   ```
+
+**Option C: Use Railway Persistent Volume**
+
+1. In Railway dashboard → Your service → "Volumes" tab
+2. Create a volume named `gen` mounted at `/app/gen`
+3. Upload files using Railway CLI or SSH into the service
+
+**Note:** The server will log a warning if the index files are missing, but it will still start. Similarity search features will be disabled until the files are uploaded. Check the `/health` endpoint - it will show `"engine": "not_loaded"` if the index is missing.
+
+### 5. Set Environment Variables
 
 Go to your service → "Variables" tab → "Raw Editor" and add:
 
@@ -108,6 +152,8 @@ BEARER_TOKEN=<your-bearer-token>
 - [ ] Service is running and accessible
 - [ ] Environment variables are set correctly
 - [ ] Database connection is working
+- [ ] FAISS index files are uploaded (`game_vectors.index` and `game_ids.json`)
+- [ ] Health endpoint shows `"engine": "loaded"` (check `/health` endpoint)
 - [ ] CORS is configured for your frontend domain
 - [ ] Test API endpoints are responding
 - [ ] Frontend is configured with the new backend URL
