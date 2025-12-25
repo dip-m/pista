@@ -13,7 +13,7 @@ API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
 
 # CORS Configuration
-ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,https://pistatabletop.netlify.app")
 ALLOWED_ORIGINS: List[str] = [
     origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()
 ]

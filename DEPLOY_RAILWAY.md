@@ -96,8 +96,8 @@ DATABASE_URL=postgresql://postgres.azejopggiscyfjyaiosi:Pista_01123@aws-1-eu-wes
 # Environment
 ENVIRONMENT=production
 
-# CORS (replace with your frontend URL)
-ALLOWED_ORIGINS=https://your-frontend-domain.netlify.app,http://localhost:3000
+# CORS (replace with your frontend URL - include both production and localhost for testing)
+ALLOWED_ORIGINS=https://pistatabletop.netlify.app,http://localhost:3000
 
 # JWT (Railway will generate this, or set manually)
 JWT_SECRET_KEY=<generate-a-strong-random-secret-key>

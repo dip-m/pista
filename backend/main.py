@@ -56,7 +56,7 @@ try:
 except ImportError:
     # Fallback if config module doesn't exist
     import os
-    ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+    ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,https://pistatabletop.netlify.app")
     ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()]
 
 app.add_middleware(
