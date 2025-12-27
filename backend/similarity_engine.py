@@ -10,7 +10,7 @@ from psycopg2.extensions import connection as psycopg2_connection
 
 from backend.reasoning_utils import get_game_features, compute_meta_similarity, build_reason_summary
 from backend.logger_config import logger
-from .db import execute_query
+from .db import execute_query, get_connection, put_connection
 
 
 class SimilarityEngine:
@@ -22,8 +22,40 @@ class SimilarityEngine:
         # precompute bgg_id -> index row
         self._id_to_index = {gid: i for i, gid in enumerate(id_map)}
 
+    def _ensure_connection(self):
+        """Ensure the database connection is alive, refresh if needed."""
+        if self.conn is None:
+            # No connection at all, get a new one
+            logger.warning("No database connection, acquiring from pool")
+            self.conn = get_connection()
+            return
+
+        try:
+            # Test if connection is still alive
+            cur = self.conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+        except (psycopg2.InterfaceError, psycopg2.OperationalError, AttributeError):
+            # Connection is dead, get a new one
+            logger.warning("Database connection closed, re-acquiring from pool")
+            try:
+                # Return old connection to pool if it exists (might fail, but that's ok)
+                if self.conn is not None:
+                    try:
+                        if not self.conn.closed:
+                            put_connection(self.conn)
+                    except (AttributeError, Exception):
+                        pass  # Ignore errors when returning dead connection
+            except Exception:
+                pass  # Ignore errors when returning dead connection
+            # Get a new connection from the pool
+            self.conn = get_connection()
+            logger.info("Re-acquired database connection from pool")
+
     def _fetch_embedding(self, game_id: int) -> np.ndarray:
-        """Fetch embedding for a game, with error handling."""
+        """Fetch embedding for a game, with error handling and connection health check."""
+        # Ensure connection is alive before using it
+        self._ensure_connection()
         try:
             cur = execute_query(self.conn, "SELECT vector_json FROM game_embeddings WHERE game_id = %s", (game_id,))
             row = cur.fetchone()
@@ -33,14 +65,44 @@ class SimilarityEngine:
             vec = np.array(json.loads(row[0]), dtype="float32")
             faiss.normalize_L2(vec.reshape(1, -1))
             return vec
+        except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+            # Connection error - try once more with a fresh connection
+            logger.warning(f"Connection error fetching embedding for game_id={game_id}, retrying: {e}")
+            self._ensure_connection()
+            try:
+                cur = execute_query(self.conn, "SELECT vector_json FROM game_embeddings WHERE game_id = %s", (game_id,))
+                row = cur.fetchone()
+                if not row:
+                    logger.warning(f"No embedding found for game_id={game_id}")
+                    raise ValueError(f"No embedding found for game_id={game_id}")
+                vec = np.array(json.loads(row[0]), dtype="float32")
+                faiss.normalize_L2(vec.reshape(1, -1))
+                return vec
+            except Exception as retry_e:
+                logger.error(f"Error fetching embedding for game_id={game_id} after retry: {retry_e}", exc_info=True)
+                raise
         except (ValueError, json.JSONDecodeError, psycopg2.Error, Exception) as e:
             logger.error(f"Error fetching embedding for game_id={game_id}: {e}", exc_info=True)
             raise
 
     def _fetch_name(self, game_id: int) -> str:
-        cur = execute_query(self.conn, "SELECT name FROM games WHERE id = %s", (game_id,))
-        row = cur.fetchone()
-        return row[0] if row else f"(id={game_id})"
+        """Fetch game name, with connection health check."""
+        self._ensure_connection()
+        try:
+            cur = execute_query(self.conn, "SELECT name FROM games WHERE id = %s", (game_id,))
+            row = cur.fetchone()
+            return row[0] if row else f"(id={game_id})"
+        except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+            # Connection error - try once more with a fresh connection
+            logger.warning(f"Connection error fetching name for game_id={game_id}, retrying: {e}")
+            self._ensure_connection()
+            try:
+                cur = execute_query(self.conn, "SELECT name FROM games WHERE id = %s", (game_id,))
+                row = cur.fetchone()
+                return row[0] if row else f"(id={game_id})"
+            except Exception as retry_e:
+                logger.error(f"Error fetching name for game_id={game_id} after retry: {retry_e}")
+                return f"(id={game_id})"
 
     def search_similar(
         self,
@@ -63,6 +125,9 @@ class SimilarityEngine:
         exclude_features: list of feature types to exclude matches on
         """
         logger.debug(f"Searching similar to game_id={game_id}, top_k={top_k}, constraints={constraints}")
+
+        # Ensure connection is healthy before starting search
+        self._ensure_connection()
 
         # Initialize sims and idxs to avoid UnboundLocalError if exception occurs early
         sims = np.array([])
@@ -123,13 +188,30 @@ class SimilarityEngine:
 
             if explain:
                 try:
+                    # Ensure connection is healthy before getting features
+                    self._ensure_connection()
                     # Validate game_id before calling get_game_features
                     if game_id is None:
                         raise ValueError("game_id cannot be None")
                     game_id = int(game_id)  # Ensure it's an integer
                     base_features = get_game_features(self.conn, game_id)
-                except (ValueError, TypeError, psycopg2.Error) as e:
-                    logger.warning(f"Error getting base features for game_id={game_id}: {e}")
+                except (ValueError, TypeError, psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+                    # Connection error - try once more with a fresh connection
+                    if isinstance(e, (psycopg2.InterfaceError, psycopg2.OperationalError)):
+                        logger.warning(f"Connection error getting base features for game_id={game_id}, retrying: {e}")
+                        self._ensure_connection()
+                        try:
+                            base_features = get_game_features(self.conn, game_id)
+                        except Exception as retry_e:
+                            logger.warning(f"Error getting base features for game_id={game_id} after retry: {retry_e}")
+                            base_features = None
+                            explain = False
+                    else:
+                        logger.warning(f"Error getting base features for game_id={game_id}: {e}")
+                        base_features = None
+                        explain = False  # Fall back to embedding-only search
+                except psycopg2.Error as e:
+                    logger.warning(f"Database error getting base features for game_id={game_id}: {e}")
                     base_features = None
                     explain = False  # Fall back to embedding-only search
         except Exception as e:
@@ -176,11 +258,27 @@ class SimilarityEngine:
 
             # Fetch additional game data including num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description, designers for reordering
             try:
+                # Ensure connection is healthy before querying
+                self._ensure_connection()
                 cur = execute_query(
                     self.conn,
                     "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = %s",
                     (gid,),
                 )
+            except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+                # Connection error - try once more with a fresh connection
+                logger.warning(f"Connection error fetching game {gid}, retrying: {e}")
+                self._ensure_connection()
+                try:
+                    cur = execute_query(
+                        self.conn,
+                        "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = %s",
+                        (gid,),
+                    )
+                except Exception as retry_e:
+                    logger.warning(f"SQL error fetching game {gid} after retry: {retry_e}")
+                    filtered_out["failed_explain"] += 1
+                    continue
             except (psycopg2.Error, Exception) as e:
                 logger.warning(f"SQL error fetching game {gid}: {e}")
                 filtered_out["failed_explain"] += 1
@@ -200,6 +298,8 @@ class SimilarityEngine:
             # Get designers for this game
             designers = []
             try:
+                # Connection should still be healthy from previous query, but check anyway
+                self._ensure_connection()
                 cur_designers = execute_query(
                     self.conn,
                     """SELECT d.name FROM designers d
@@ -208,6 +308,21 @@ class SimilarityEngine:
                     (gid,),
                 )
                 designers = [row[0] for row in cur_designers.fetchall()]
+            except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+                # Connection error - try once more
+                logger.debug(f"Connection error fetching designers for game {gid}, retrying: {e}")
+                self._ensure_connection()
+                try:
+                    cur_designers = execute_query(
+                        self.conn,
+                        """SELECT d.name FROM designers d
+                           JOIN game_designers gd ON gd.designer_id = d.id
+                           WHERE gd.game_id = %s ORDER BY d.name""",
+                        (gid,),
+                    )
+                    designers = [row[0] for row in cur_designers.fetchall()]
+                except Exception:
+                    pass  # Ignore errors on retry
             except (psycopg2.Error, Exception):
                 pass
 
@@ -311,7 +426,17 @@ class SimilarityEngine:
             # Check required feature values EARLY (before computing similarity)
             if required_feature_values:
                 try:
+                    self._ensure_connection()
                     other_features_check = get_game_features(self.conn, gid)
+                except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+                    # Connection error - try once more
+                    logger.warning(f"Connection error getting features for game_id={gid}, retrying: {e}")
+                    self._ensure_connection()
+                    try:
+                        other_features_check = get_game_features(self.conn, gid)
+                    except Exception as retry_e:
+                        logger.warning(f"Error getting features for game_id={gid} after retry: {retry_e}")
+                        continue
                 except (ValueError, psycopg2.Error) as e:
                     logger.warning(f"Error getting features for game_id={gid} to check required features: {e}")
                     # If we can't get features, skip this game (it likely doesn't exist or has invalid data)
@@ -353,6 +478,7 @@ class SimilarityEngine:
 
             if explain and base_features:
                 try:
+                    self._ensure_connection()
                     other_features = get_game_features(self.conn, gid)
 
                     # Apply excluded feature values if provided (remove from consideration)
@@ -436,6 +562,7 @@ class SimilarityEngine:
             elif explain and not base_features:
                 # explain=True but base_features unavailable - still try to get other_features for basic info
                 try:
+                    self._ensure_connection()
                     other_features = get_game_features(self.conn, gid)
                     # Can't compute meta_similarity without base_features, but we can still provide basic info
                     record["final_score"] = record["embedding_similarity"]
@@ -576,6 +703,8 @@ class SimilarityEngine:
             return True
 
         try:
+            # Ensure connection is healthy before querying
+            self._ensure_connection()
             # Fetch playing_time from database
             cur = execute_query(
                 self.conn, "SELECT playing_time, min_playtime, max_playtime FROM games WHERE id = %s", (game_id,)
