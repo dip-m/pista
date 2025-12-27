@@ -24,3 +24,14 @@ New in this version:
 
 5. Query similar games with explanations:
    python similar_games.py --db bgg_semantic.db --index game_vectors.index --id-map game_ids.json --game-id 224517 --top-k 10 --explain 1
+
+## Documentation
+
+All project documentation is located in the [`docs/`](docs/) folder, including:
+- Deployment guides
+- Testing documentation
+- Migration guides
+- Environment setup instructions
+- And more...
+
+See [`docs/README.md`](docs/README.md) for a complete list of available documentation.
