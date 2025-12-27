@@ -261,8 +261,46 @@ CREATE TABLE IF NOT EXISTS user_scoring_sessions (
     FOREIGN KEY (mechanism_id) REFERENCES scoring_mechanisms(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS feature_blacklist (
+    id              SERIAL PRIMARY KEY,
+    keyword_phrase  TEXT NOT NULL,  -- Keyword or phrase to match (case-insensitive)
+    feature_type    TEXT,  -- NULL means match all types, or specific: 'mechanics', 'categories', 'families', 'designers', 'artists', 'publishers'
+    match_type      TEXT NOT NULL DEFAULT 'partial',  -- 'partial' or 'exact'
+    is_active       BOOLEAN DEFAULT TRUE,
+    created_by      INTEGER,  -- Admin user ID
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feature_blacklist_active ON feature_blacklist(is_active, feature_type);
+
+CREATE TABLE IF NOT EXISTS marketplace_entries (
+    id              SERIAL PRIMARY KEY,
+    game_id         INTEGER NOT NULL,
+    marketplace_name TEXT NOT NULL,  -- 'amazon', 'ebay', 'geekmarket', 'wallapop', 'bga'
+    url             TEXT,
+    price           REAL,
+    currency        TEXT DEFAULT 'USD',
+    shipping_cost   REAL DEFAULT 0,
+    country         TEXT,  -- Country of origin/seller
+    condition       TEXT,  -- 'new', 'used', 'like_new', etc.
+    seller_rating   REAL,
+    seller_reviews  INTEGER,
+    bga_access      TEXT,  -- For BGA: 'free' or 'premium_required'
+    premium_price    REAL,  -- For BGA: Premium subscription price
+    premium_price_currency TEXT DEFAULT 'USD',
+    premium_price_last_checked TIMESTAMP,  -- When premium price was last updated
+    estimated_total_cost REAL,  -- price + shipping_cost (estimated if not available)
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_marketplace_entries_game ON marketplace_entries(game_id);
+CREATE INDEX IF NOT EXISTS idx_marketplace_entries_marketplace ON marketplace_entries(marketplace_name);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_game_mechanics_game ON game_mechanics(game_id);
 CREATE INDEX IF NOT EXISTS idx_game_categories_game ON game_categories(game_id);
 CREATE INDEX IF NOT EXISTS idx_user_collections_user ON user_collections(user_id);
-

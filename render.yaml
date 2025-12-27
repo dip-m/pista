@@ -49,4 +49,3 @@ services:
 
   # PostgreSQL database is hosted on Supabase
   # No need for Render PostgreSQL service
-

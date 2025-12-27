@@ -106,4 +106,3 @@ See `ENV_SETUP.md` for detailed information about all environment variables.
 - Ensure PostgreSQL is running
 - Verify database `pista` exists: `CREATE DATABASE pista;`
 - Check credentials in `.env.dev`
-

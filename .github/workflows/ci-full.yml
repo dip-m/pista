@@ -1,0 +1,29 @@
+name: Full CI (Backend + Frontend)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: Backend Tests
+    uses: ./.github/workflows/ci-backend.yml
+
+  frontend:
+    name: Frontend Tests
+    uses: ./.github/workflows/ci-frontend.yml
+
+  coverage-report:
+    name: Coverage Report
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Coverage Summary
+        run: |
+          echo "## Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Backend and Frontend tests completed. Check individual job artifacts for detailed coverage reports." >> $GITHUB_STEP_SUMMARY

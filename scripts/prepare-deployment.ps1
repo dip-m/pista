@@ -41,4 +41,3 @@ Write-Host "1. Edit .env and frontend/.env.production with your values" -Foregro
 Write-Host "2. Deploy backend (see DEPLOYMENT_GUIDE.md)" -ForegroundColor White
 Write-Host "3. Deploy frontend (see DEPLOYMENT_GUIDE.md)" -ForegroundColor White
 Write-Host "4. Build mobile app (see DEPLOYMENT_GUIDE.md)" -ForegroundColor White
-

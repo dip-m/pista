@@ -143,4 +143,3 @@ chmod +x start-frontend.sh
 - Update `ALLOWED_ORIGINS` with your actual frontend URLs
 - For development, the backend uses PostgreSQL on localhost:5432
 - Make sure PostgreSQL is running before starting the backend in dev mode
-

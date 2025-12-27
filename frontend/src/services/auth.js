@@ -17,7 +17,7 @@ export const authService = {
       localStorage.setItem("token_expires", (Date.now() + 24 * 60 * 60 * 1000).toString());
     }
   },
-  
+
   isTokenExpired() {
     const expires = localStorage.getItem("token_expires");
     if (!expires) return true;
@@ -67,11 +67,11 @@ export const authService = {
     const res = await fetch(`${API_BASE}/auth/oauth/callback`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        provider, 
+      body: JSON.stringify({
+        provider,
         token,
         email,
-        name 
+        name
       }),
     });
     if (!res.ok) {
@@ -98,4 +98,3 @@ export const authService = {
     localStorage.removeItem("token_expires");
   },
 };
-

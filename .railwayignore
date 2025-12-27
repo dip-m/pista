@@ -12,4 +12,3 @@ gen/
 *.index
 *.faiss
 yolov8n.pt
-

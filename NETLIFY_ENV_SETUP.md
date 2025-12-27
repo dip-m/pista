@@ -31,4 +31,3 @@ After setting the variable and redeploying:
 1. Open `https://pistatabletop.netlify.app/login`
 2. Open browser DevTools (F12) → Console
 3. You should see logs showing the correct API_BASE URL (not localhost:8000)
-

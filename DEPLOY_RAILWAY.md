@@ -240,4 +240,3 @@ After backend is deployed:
 - Railway Documentation: https://docs.railway.app
 - Railway Discord: https://discord.gg/railway
 - Check service logs in Railway dashboard for debugging
-

@@ -6,11 +6,18 @@ from typing import Optional, Dict, Any
 import jwt
 import requests
 from backend.config import (
-    JWT_SECRET_KEY, JWT_ALGORITHM, JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
-    GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
-    MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET,
-    META_CLIENT_ID, META_CLIENT_SECRET,
-    GOOGLE_REDIRECT_URI, MICROSOFT_REDIRECT_URI, META_REDIRECT_URI
+    JWT_SECRET_KEY,
+    JWT_ALGORITHM,
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    MICROSOFT_CLIENT_ID,
+    MICROSOFT_CLIENT_SECRET,
+    META_CLIENT_ID,
+    META_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI,
+    MICROSOFT_REDIRECT_URI,
+    META_REDIRECT_URI,
 )
 
 SECRET_KEY = JWT_SECRET_KEY
@@ -61,10 +68,7 @@ def decode_access_token(token: str) -> Optional[dict]:
 def verify_google_token(token: str) -> Optional[Dict[str, Any]]:
     """Verify Google OAuth token and return user info."""
     try:
-        response = requests.get(
-            f"https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {token}"}
-        )
+        response = requests.get(f"https://www.googleapis.com/oauth2/v2/userinfo", headers={"Authorization": f"Bearer {token}"})
         if response.status_code == 200:
             data = response.json()
             return {
@@ -80,10 +84,7 @@ def verify_google_token(token: str) -> Optional[Dict[str, Any]]:
 def verify_microsoft_token(token: str) -> Optional[Dict[str, Any]]:
     """Verify Microsoft OAuth token and return user info."""
     try:
-        response = requests.get(
-            "https://graph.microsoft.com/v1.0/me",
-            headers={"Authorization": f"Bearer {token}"}
-        )
+        response = requests.get("https://graph.microsoft.com/v1.0/me", headers={"Authorization": f"Bearer {token}"})
         if response.status_code == 200:
             data = response.json()
             return {
@@ -99,9 +100,7 @@ def verify_microsoft_token(token: str) -> Optional[Dict[str, Any]]:
 def verify_meta_token(token: str) -> Optional[Dict[str, Any]]:
     """Verify Meta (Facebook) OAuth token and return user info."""
     try:
-        response = requests.get(
-            f"https://graph.facebook.com/me?fields=id,name,email&access_token={token}"
-        )
+        response = requests.get(f"https://graph.facebook.com/me?fields=id,name,email&access_token={token}")
         if response.status_code == 200:
             data = response.json()
             return {
@@ -112,4 +111,3 @@ def verify_meta_token(token: str) -> Optional[Dict[str, Any]]:
     except Exception:
         pass
     return None
-

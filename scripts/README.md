@@ -48,4 +48,3 @@ Builds the Android APK.
 - Make scripts executable on Linux/Mac: `chmod +x scripts/*.sh`
 - PowerShell scripts work on Windows
 - All scripts should be run from the project root directory
-

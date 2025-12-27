@@ -1,0 +1,119 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'backend/**'
+      - 'requirements*.txt'
+      - 'pytest.ini'
+      - '.github/workflows/ci-backend.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'backend/**'
+      - 'requirements*.txt'
+      - 'pytest.ini'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11']
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pista_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-deploy.txt
+          pip install -r requirements-test.txt
+
+      - name: Lint with flake8
+        run: |
+          flake8 backend/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 backend/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        continue-on-error: true
+
+      - name: Format check with black
+        run: black --check backend/ --line-length=127
+        continue-on-error: true
+
+      - name: Run unit tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pista_test
+          DB_TYPE: postgres
+          JWT_SECRET_KEY: test-secret-key-for-ci
+          ENVIRONMENT: test
+          ALLOWED_ORIGINS: http://localhost:3000
+        run: |
+          pytest backend/tests/unit/ -v --tb=short --cov=backend --cov-report=term-missing --cov-report=xml --cov-report=html
+
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pista_test
+          DB_TYPE: postgres
+          JWT_SECRET_KEY: test-secret-key-for-ci
+          ENVIRONMENT: test
+          ALLOWED_ORIGINS: http://localhost:3000
+        run: |
+          pytest backend/tests/integration/ -v --tb=short --cov=backend --cov-report=term-missing --cov-report=xml --cov-report=html --cov-append
+
+      - name: Run feature tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pista_test
+          DB_TYPE: postgres
+          JWT_SECRET_KEY: test-secret-key-for-ci
+          ENVIRONMENT: test
+          ALLOWED_ORIGINS: http://localhost:3000
+        run: |
+          pytest backend/tests/feature/ -v --tb=short --cov=backend --cov-report=term-missing --cov-report=xml --cov-report=html --cov-append
+
+      - name: Generate coverage report
+        run: |
+          coverage combine
+          coverage xml
+          coverage html
+          coverage report
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: backend
+          name: backend-coverage
+          fail_ci_if_error: false
+
+      - name: Upload coverage HTML
+        uses: actions/upload-artifact@v3
+        with:
+          name: backend-coverage-html
+          path: htmlcov/
+          retention-days: 7
+
+      - name: Check coverage threshold
+        run: |
+          coverage report --fail-under=60 || echo "Coverage below 60% - please improve test coverage"

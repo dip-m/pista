@@ -14,14 +14,12 @@ API_PORT = int(os.getenv("API_PORT", "8000"))
 
 # CORS Configuration
 ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,https://pistatabletop.netlify.app")
-ALLOWED_ORIGINS: List[str] = [
-    origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()
-]
+ALLOWED_ORIGINS: List[str] = [origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()]
 
-# Database
-DB_TYPE = os.getenv("DB_TYPE", "sqlite")  # 'sqlite' or 'postgres'
-DATABASE_URL = os.getenv("DATABASE_URL", "")  # PostgreSQL connection string
-DB_PATH = os.getenv("DB_PATH", "./gen/bgg_semantic.db")
+# Database - PostgreSQL only
+DATABASE_URL = os.getenv("DATABASE_URL", "")  # PostgreSQL connection string (required)
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is required. Set it to your PostgreSQL connection string.")
 
 # Security
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-in-production")
@@ -54,4 +52,3 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 # Development vs Production
 IS_PRODUCTION = ENVIRONMENT.lower() == "production"
-

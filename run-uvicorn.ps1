@@ -21,4 +21,3 @@ python -m uvicorn backend.main:app --reload `
     --reload-exclude "logs/**" `
     --reload-exclude "node_modules" `
     --reload-exclude "node_modules/**"
-

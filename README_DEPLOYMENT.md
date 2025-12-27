@@ -87,4 +87,3 @@ See `.env.example` and `frontend/.env.production.example` for all required varia
 2. Review error logs in your hosting service
 3. Verify all environment variables are set correctly
 4. Ensure database and index files are accessible
-

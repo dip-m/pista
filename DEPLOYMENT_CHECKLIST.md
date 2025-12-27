@@ -184,4 +184,3 @@ If issues occur:
 - **Backend Issues**: Check hosting service logs
 - **Frontend Issues**: Check browser console and network tab
 - **Mobile Issues**: Check Android Studio logs and device logs
-

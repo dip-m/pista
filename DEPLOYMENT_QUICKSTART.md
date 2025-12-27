@@ -115,4 +115,3 @@ cd frontend/android && ./gradlew assembleRelease
 ---
 
 For detailed instructions, see [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)
-

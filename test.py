@@ -40,4 +40,3 @@ with open("name_id_map.json", "w", encoding="utf-8") as f:
     json.dump(name_id_map, f, ensure_ascii=False, indent=2)
 
 print(f"? Saved {len(game_ids)} embeddings, index, and name map.")
-

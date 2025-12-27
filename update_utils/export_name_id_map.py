@@ -25,7 +25,7 @@ def get_name_id_map(conn=None) -> dict:
     """
     Get name-to-id mapping from database.
     Works with both SQLite and PostgreSQL.
-    
+
     Args:
         conn: Database connection (optional). If None, will try to get from backend.db
     """
@@ -47,7 +47,7 @@ def get_name_id_map(conn=None) -> dict:
             should_close = True
     else:
         should_close = False
-    
+
     try:
         # Use execute_query if available (for PostgreSQL compatibility)
         try:
@@ -58,7 +58,7 @@ def get_name_id_map(conn=None) -> dict:
             # Fallback to direct execute
             cur = conn.execute("SELECT id, name FROM games")
             rows = cur.fetchall()
-        
+
         name_id_map = {}
 
         for row in rows:
@@ -71,7 +71,7 @@ def get_name_id_map(conn=None) -> dict:
                 # Tuple
                 game_id = row[0]
                 raw_name = row[1]
-            
+
             norm_name = normalize_name(raw_name)
 
             # Basic mapping: full normalized name → id
@@ -88,7 +88,7 @@ def get_name_id_map(conn=None) -> dict:
             simple_name = re.sub(r"\s+", " ", simple_name).strip()
             if simple_name and simple_name != norm_name:
                 name_id_map.setdefault(simple_name, game_id)
-        
+
         return name_id_map
     finally:
         if should_close:
@@ -115,4 +115,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -3,4 +3,3 @@
 # Use this for deployment platforms that expect requirements.txt in root
 
 -r update_utils/requirements.txt
-

@@ -36,56 +36,52 @@ def fetch_user_collection(bgg_user_id: str) -> List[Dict[str, Any]]:
     Returns list of dicts with game_id and personal_rating.
     """
     logger.info(f"Fetching BGG collection for user: {bgg_user_id}")
-    
+
     # Sanitize input
     bgg_user_id = bgg_user_id.strip()
     if not bgg_user_id:
         raise ValueError("BGG user ID cannot be empty")
-    
-    params = {
-        "username": bgg_user_id,
-        "own": "1",  # Only owned games
-        "stats": "1"
-    }
-    
+
+    params = {"username": bgg_user_id, "own": "1", "stats": "1"}  # Only owned games
+
     max_retries = 5
     retry_sleep = 5.0
-    
+
     for attempt in range(max_retries):
         try:
             _rate_limit()  # Enforce rate limiting
-            resp = requests.get(BGG_COLLECTION_URL, params=params, headers = headers, timeout=30)
-            
+            resp = requests.get(BGG_COLLECTION_URL, params=params, headers=headers, timeout=30)
+
             if resp.status_code == 202:
                 logger.debug(f"BGG request queued, waiting {retry_sleep}s (attempt {attempt + 1})")
                 time.sleep(retry_sleep)
                 continue
-            
+
             if resp.status_code != 200:
                 logger.warning(f"BGG API returned status {resp.status_code} (attempt {attempt + 1})")
                 if attempt < max_retries - 1:
                     time.sleep(retry_sleep)
                     continue
                 raise Exception(f"BGG API returned status {resp.status_code}")
-            
+
             try:
                 root = ET.fromstring(resp.content)
             except ET.ParseError as e:
                 logger.error(f"Failed to parse BGG XML: {e}")
                 raise
-            
+
             games = []
             for item in root.findall("item"):
                 game_id = item.get("objectid")
                 if not game_id:
                     continue
-                
+
                 try:
                     game_id_int = int(game_id)
                 except ValueError:
                     logger.debug(f"Invalid game_id: {game_id}")
                     continue
-                
+
                 # Extract personal rating from stats/rating
                 # BGG XML structure: <stats><rating value="8.5"/> or <stats><rating><value>8.5</value></rating>
                 personal_rating = None
@@ -112,21 +108,17 @@ def fetch_user_collection(bgg_user_id: str) -> List[Dict[str, Any]]:
                                         personal_rating = float(rating_str)
                                 except (ValueError, AttributeError):
                                     pass
-                
-                games.append({
-                    "game_id": game_id_int,
-                    "personal_rating": personal_rating
-                })
-            
+
+                games.append({"game_id": game_id_int, "personal_rating": personal_rating})
+
             logger.info(f"Fetched {len(games)} games from BGG collection for user {bgg_user_id}")
             return games
-            
+
         except requests.RequestException as e:
             logger.warning(f"Request error fetching BGG collection (attempt {attempt + 1}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_sleep)
                 continue
             raise
-    
-    raise Exception(f"Failed to fetch BGG collection after {max_retries} attempts")
 
+    raise Exception(f"Failed to fetch BGG collection after {max_retries} attempts")

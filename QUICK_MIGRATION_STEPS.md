@@ -41,4 +41,3 @@ Set these in Render environment variables:
 - **All database queries updated** to support PostgreSQL
 - **BEARER_TOKEN** moved to environment variables
 - **Migration script** handles user data conversion
-

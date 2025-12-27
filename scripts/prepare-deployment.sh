@@ -46,4 +46,3 @@ echo "1. Edit .env and frontend/.env.production with your values"
 echo "2. Deploy backend (see DEPLOYMENT_GUIDE.md)"
 echo "3. Deploy frontend (see DEPLOYMENT_GUIDE.md)"
 echo "4. Build mobile app (see DEPLOYMENT_GUIDE.md)"
-

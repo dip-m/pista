@@ -252,4 +252,3 @@ After backend is deployed:
 - Render Documentation: https://render.com/docs
 - Render Community: https://community.render.com
 - Check service logs in Render dashboard for debugging
-

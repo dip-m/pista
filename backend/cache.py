@@ -32,4 +32,3 @@ def clear_cache() -> None:
     """Clear all cache entries."""
     _cache.clear()
     logger.info("Cache cleared")
-

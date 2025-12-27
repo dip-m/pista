@@ -32,4 +32,3 @@ echo ""
 echo "For Vercel: vercel --prod"
 echo "For Netlify: netlify deploy --prod --dir=build"
 echo "For AWS S3: aws s3 sync build/ s3://your-bucket-name --delete"
-

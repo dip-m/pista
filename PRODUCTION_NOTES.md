@@ -188,4 +188,3 @@ The index file (`game_vectors.index`) must be accessible at the configured path.
 - [ ] User testing plan ready
 - [ ] Marketing materials ready (if applicable)
 - [ ] Legal/privacy policy in place (if applicable)
-

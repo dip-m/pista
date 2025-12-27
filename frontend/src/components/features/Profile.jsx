@@ -66,8 +66,8 @@ function Profile({ user, onUserUpdate }) {
   };
 
   // Filter collection based on search query
-  const filteredCollection = collection.filter(game => 
-    !collectionSearchQuery || 
+  const filteredCollection = collection.filter(game =>
+    !collectionSearchQuery ||
     game.name.toLowerCase().includes(collectionSearchQuery.toLowerCase())
   );
 
@@ -142,18 +142,18 @@ function Profile({ user, onUserUpdate }) {
                 placeholder="Enter your username"
                 onBlur={async (e) => {
                   const usernameValue = e.target.value.trim();
-                  
+
                   // Only update if value actually changed
                   if (usernameValue === (user.username || "")) {
                     return;
                   }
-                  
+
                   if (!usernameValue) {
                     alert("Username cannot be empty");
                     setUsername(user.username || "");
                     return;
                   }
-                  
+
                   try {
                     const res = await fetch(`${API_BASE}/profile/username`, {
                       method: "PUT",
@@ -198,12 +198,12 @@ function Profile({ user, onUserUpdate }) {
                 placeholder="Enter your BGG username or ID"
                 onBlur={async (e) => {
                   const bggIdValue = e.target.value.trim() || null;
-                  
+
                   // Only update if value actually changed
                   if (bggIdValue === (user.bgg_id || "")) {
                     return;
                   }
-                  
+
                   try {
                     const res = await fetch(`${API_BASE}/profile/bgg-id`, {
                       method: "PUT",
@@ -414,4 +414,3 @@ function Profile({ user, onUserUpdate }) {
 }
 
 export default Profile;
-

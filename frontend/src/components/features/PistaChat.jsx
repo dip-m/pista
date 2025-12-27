@@ -54,7 +54,7 @@ function PistaChat({ user }) {
   const [atMentionActive, setAtMentionActive] = useState(false);
   const [atMentionPosition, setAtMentionPosition] = useState(0);
   const [atMentionQuery, setAtMentionQuery] = useState("");
-  const [searchDebounceTimer, setSearchDebounceTimer] = useState(null);
+  const searchDebounceTimerRef = useRef(null);
   const [marketplaceGame, setMarketplaceGame] = useState(null);
   const [featuresEditorGame, setFeaturesEditorGame] = useState(null);
   const [scoringPadGame, setScoringPadGame] = useState(null);
@@ -68,7 +68,7 @@ function PistaChat({ user }) {
   const [dislikeDetails, setDislikeDetails] = useState({}); // Store additional details for each message
   const [showDislikeInput, setShowDislikeInput] = useState({}); // Track which messages show input
   const [messageLimitError, setMessageLimitError] = useState(null); // Error message for message limit
-  
+
   // Note: requiredFeatures state is managed via setRequiredFeatures in handleRequireFeature and removeRequiredFeature
 
   const loadChatHistory = useCallback(async () => {
@@ -111,7 +111,7 @@ function PistaChat({ user }) {
     }
   };
 
-  const handleGameSearch = async (query) => {
+  const handleGameSearch = useCallback(async (query) => {
     // Allow spaces and multiple keywords - trim but don't restrict
     const trimmedQuery = query.trim();
     if (trimmedQuery.length < 2) {
@@ -120,14 +120,14 @@ function PistaChat({ user }) {
       setShowGameSearch(false);
       return;
     }
-    
+
     // Clear existing debounce timer
-    if (searchDebounceTimer) {
-      clearTimeout(searchDebounceTimer);
+    if (searchDebounceTimerRef.current) {
+      clearTimeout(searchDebounceTimerRef.current);
     }
-    
+
     // Debounce search to avoid too many requests
-    const timer = setTimeout(async () => {
+    searchDebounceTimerRef.current = setTimeout(async () => {
       try {
         // Increase limit to 20 for better results
         const res = await fetch(`${API_BASE}/games/search?q=${encodeURIComponent(trimmedQuery)}&limit=20`);
@@ -156,9 +156,7 @@ function PistaChat({ user }) {
         console.error("Search failed:", err);
       }
     }, 200); // 200ms debounce
-    
-    setSearchDebounceTimer(timer);
-  };
+  }, []);
 
   // Handle @ mention in input
   const handleInputChange = (e) => {
@@ -170,7 +168,7 @@ function PistaChat({ user }) {
       // Check for @ mention
       const textBeforeCursor = value.substring(0, cursorPos);
       const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-      
+
       if (lastAtIndex !== -1) {
         // Check if @ is not part of an email or already completed mention
         const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
@@ -183,7 +181,7 @@ function PistaChat({ user }) {
         // Find where the query ends (newline or end of input)
         const queryEndMatch = fullTextAfterAt.match(/^([^\n]*)/);
         const query = queryEndMatch ? queryEndMatch[1].trim() : textAfterAt.trim();
-        
+
         if (!hasNewlineAfterAt && query.length >= 0) {
           // @ mention is active - allow spaces in query
           setAtMentionActive(true);
@@ -214,21 +212,21 @@ function PistaChat({ user }) {
 
   const handleGameSelectFromMention = (game) => {
     if (!inputRef) return;
-    
+
     const currentInput = input;
     const textBeforeAt = currentInput.substring(0, atMentionPosition);
     const textAfterAt = currentInput.substring(atMentionPosition + 1);
-    
+
     // Find where the search query ends
     let queryText = atMentionQuery || "";
-    
+
     if (!queryText) {
       const cursorPos = cursorPosition;
       queryText = currentInput.substring(atMentionPosition + 1, cursorPos).trim();
     }
-    
+
     let queryEndPos = atMentionPosition + 1;
-    
+
     if (queryText) {
       if (textAfterAt.startsWith(queryText)) {
         queryEndPos = atMentionPosition + 1 + queryText.length;
@@ -244,25 +242,25 @@ function PistaChat({ user }) {
       const spaceIndex = textAfterAt.indexOf(' ');
       queryEndPos = spaceIndex !== -1 ? atMentionPosition + 1 + spaceIndex : cursorPosition;
     }
-    
+
     const textAfterQuery = currentInput.substring(queryEndPos).trimStart();
-    
+
     // Add game to chips if not already present
     if (!gameChips.find(g => g.id === game.id)) {
       setGameChips([...gameChips, game]);
     }
-    
+
     // Reset mention state
     setAtMentionActive(false);
     setShowGameSearch(false);
     setGameSearchResults([]);
     setFeatureSearchResults([]);
     setAtMentionQuery("");
-    
+
     // Replace @ mention with game name in input textbox (don't auto-send)
     const newText = textBeforeAt + game.name + (textAfterQuery ? " " + textAfterQuery : "");
     setInput(newText);
-    
+
     // Set cursor position after inserted game name
     setTimeout(() => {
       if (inputRef) {
@@ -313,13 +311,13 @@ function PistaChat({ user }) {
       const currentInput = input;
       const textBeforeAt = currentInput.substring(0, atMentionPosition);
       const textAfterAt = currentInput.substring(atMentionPosition + 1);
-      
+
       let queryText = atMentionQuery || "";
       if (!queryText) {
         const cursorPos = cursorPosition;
         queryText = currentInput.substring(atMentionPosition + 1, cursorPos).trim();
       }
-      
+
       let queryEndPos = atMentionPosition + 1;
       if (queryText && textAfterAt.startsWith(queryText)) {
         queryEndPos = atMentionPosition + 1 + queryText.length;
@@ -331,23 +329,23 @@ function PistaChat({ user }) {
           queryEndPos = cursorPosition;
         }
       }
-      
+
       const textAfterQuery = currentInput.substring(queryEndPos).trimStart();
       const newText = textBeforeAt + feature.name + (textAfterQuery ? " " + textAfterQuery : "");
       setInput(newText);
-      
+
       // Add feature as required feature chip
       // Use the last message index or 0 if no messages
       // Don't auto-requery when selecting from @ dropdown - let user send manually
       const messageIndex = messages.length > 0 ? messages.length - 1 : 0;
       handleRequireFeature(messageIndex, feature.type, feature.name, false);
-      
+
       setAtMentionActive(false);
       setShowGameSearch(false);
       setGameSearchResults([]);
       setFeatureSearchResults([]);
       setAtMentionQuery("");
-      
+
       setTimeout(() => {
         if (inputRef) {
           const newPos = textBeforeAt.length + feature.name.length + (textAfterQuery ? 1 : 0);
@@ -359,12 +357,12 @@ function PistaChat({ user }) {
     } else {
       // Not in @ mention mode, just add to input
       insertTextAtCursor(feature.name + " ");
-      
+
       // Add feature as required feature chip
       // Don't auto-requery when selecting from @ dropdown - let user send manually
       const messageIndex = messages.length > 0 ? messages.length - 1 : 0;
       handleRequireFeature(messageIndex, feature.type, feature.name, false);
-      
+
       setShowGameSearch(false);
       setGameSearchResults([]);
       setFeatureSearchResults([]);
@@ -388,11 +386,11 @@ function PistaChat({ user }) {
   const removeGameChip = (gameId) => {
     const game = gameChips.find(g => g.id === gameId);
     if (!game) return;
-    
+
     // Remove game chip
     const newGameChips = gameChips.filter(g => g.id !== gameId);
     setGameChips(newGameChips);
-    
+
     // Remove game name from input textbox
     // Handle both comma-separated and space-separated formats
     const gameNameEscaped = game.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -404,19 +402,19 @@ function PistaChat({ user }) {
       .replace(/\s+/g, ' ')
       .replace(/^,\s*|,\s*$/g, '') // Remove leading/trailing commas
       .trim();
-    
+
     // Also remove any "similar to" or "different from" text that would trigger recommend_similar/different
     newInput = newInput
       .replace(/\b(games?\s+)?(similar\s+to|different\s+from)\s+/gi, '')
       .replace(/\s+/g, ' ')
       .trim();
-    
+
     setInput(newInput);
-    
+
     // Reset context - when game chip is removed, context should reset to global_search for games matching features
     // Clear any recommend_similar/different context by clearing chips that imply that
     setPromptChips([]);
-    
+
     // Clear any game-related context from previous queries
     // This ensures that when a feature search is done after removing a game chip,
     // the backend won't use the old game context
@@ -513,21 +511,21 @@ function PistaChat({ user }) {
 
   const handleLikeDislike = async (messageIndex, action) => {
     if (!user || !helpfulQuestion) return;
-    
+
     const message = messages[messageIndex];
     if (!message || message.role !== "assistant") return;
-    
+
     // Find the option ID for Yes (like) or No (dislike)
-    const option = helpfulQuestion.options?.find(opt => 
-      (action === "like" && opt.text === "Yes") || 
+    const option = helpfulQuestion.options?.find(opt =>
+      (action === "like" && opt.text === "Yes") ||
       (action === "dislike" && opt.text === "No")
     );
-    
+
     if (!option) {
       console.error("Could not find option for action:", action);
       return;
     }
-    
+
     // If dislike, show input box first (don't submit yet)
     if (action === "dislike" && option.text === "No") {
       setShowDislikeInput(prev => ({ ...prev, [messageIndex]: true }));
@@ -541,7 +539,7 @@ function PistaChat({ user }) {
       });
       return; // Don't submit yet, wait for user to optionally add details
     }
-    
+
     // Update local state immediately
     setMessages((prev) => {
       const updated = [...prev];
@@ -552,7 +550,7 @@ function PistaChat({ user }) {
       };
       return updated;
     });
-    
+
     // Submit feedback
     try {
       const res = await fetch(`${API_BASE}/feedback/respond`, {
@@ -573,7 +571,7 @@ function PistaChat({ user }) {
           thread_id: threadId || null,
         }),
       });
-      
+
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         console.error("Failed to submit like/dislike:", errorData);
@@ -596,16 +594,16 @@ function PistaChat({ user }) {
 
   const handleDislikeSubmit = async (messageIndex) => {
     if (!user || !helpfulQuestion) return;
-    
+
     const message = messages[messageIndex];
     if (!message || message.role !== "assistant") return;
-    
+
     // Find the No option
     const option = helpfulQuestion.options?.find(opt => opt.text === "No");
     if (!option) return;
-    
+
     const additionalDetails = dislikeDetails[messageIndex] || "";
-    
+
     // Submit feedback with optional additional details
     try {
       const res = await fetch(`${API_BASE}/feedback/respond`, {
@@ -626,13 +624,13 @@ function PistaChat({ user }) {
           thread_id: threadId || null,
         }),
       });
-      
+
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         console.error("Failed to submit dislike feedback:", errorData);
         throw new Error(errorData.detail || "Failed to submit feedback");
       }
-      
+
       // Hide input after successful submission
       setShowDislikeInput(prev => {
         const newState = { ...prev };
@@ -651,14 +649,14 @@ function PistaChat({ user }) {
 
   const handleFeedbackResponse = async (messageIndex, questionId, response) => {
     if (!user) return;
-    
+
     const message = messages[messageIndex];
     if (!message) return;
-    
+
     // Find the question to determine its type
     const question = message.feedbackQuestion;
     if (!question) return;
-    
+
     // Remove feedback question from message after response
     setMessages((prev) => {
       const updated = [...prev];
@@ -668,11 +666,11 @@ function PistaChat({ user }) {
       };
       return updated;
     });
-    
+
     // Handle different response types
     let optionId = null;
     let responseText = null;
-    
+
     if (question.question_type === "single_select") {
       // Single select: response is an option object with id
       if (typeof response === 'object' && response !== null) {
@@ -698,7 +696,7 @@ function PistaChat({ user }) {
       // Text question: response is a string
       responseText = typeof response === 'object' ? response.text || JSON.stringify(response) : response;
     }
-    
+
     // Submit feedback
     try {
       const requestBody = {
@@ -711,7 +709,7 @@ function PistaChat({ user }) {
         }),
         thread_id: threadId !== null && threadId !== undefined ? threadId : null,
       };
-      
+
       console.log("Submitting feedback:", {
         question_type: question.question_type,
         questionId,
@@ -720,7 +718,7 @@ function PistaChat({ user }) {
         originalResponse: response,
         requestBody
       });
-      
+
       const res = await fetch(`${API_BASE}/feedback/respond`, {
         method: "POST",
         headers: {
@@ -729,13 +727,13 @@ function PistaChat({ user }) {
         },
         body: JSON.stringify(requestBody),
       });
-      
+
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         console.error("Failed to submit feedback:", errorData);
         throw new Error(errorData.detail || "Failed to submit feedback");
       }
-      
+
       const result = await res.json();
       console.log("Feedback submitted successfully:", result);
     } catch (err) {
@@ -755,7 +753,7 @@ function PistaChat({ user }) {
       }
       // Add the feature to required set
       newRequired[messageIndex][featureType].add(featureValue);
-      
+
       // Update active required features for display
       setActiveRequiredFeatures((prev) => {
         const key = `${featureType}:${featureValue}`;
@@ -764,12 +762,12 @@ function PistaChat({ user }) {
         }
         return prev;
       });
-      
+
       // Re-query with required feature (only if autoRequery is true)
       if (!autoRequery) {
         return;
       }
-      
+
       const message = messages[messageIndex];
       if (message && message.querySpec) {
         // Find the original user message that triggered this response
@@ -781,7 +779,7 @@ function PistaChat({ user }) {
             break;
           }
         }
-        
+
         if (originalUserMessage) {
           // Build required feature values object - aggregate ALL required features from ALL messages
           const required = {};
@@ -793,13 +791,13 @@ function PistaChat({ user }) {
               newRequired[msgIdx][ft].forEach(val => required[ft].add(val));
             });
           });
-          
+
           // Convert Sets to Arrays
           const requiredArray = {};
           Object.keys(required).forEach(ft => {
             requiredArray[ft] = Array.from(required[ft]);
           });
-          
+
           // Re-send the query with required features in context
           const context = {
             last_game_id: gameChips.length > 0 ? gameChips[0].id : null,
@@ -809,7 +807,7 @@ function PistaChat({ user }) {
             playtime_chips: playtimeChips.map(c => c.value),
             required_feature_values: requiredArray, // Pass required features in context
           };
-          
+
           const requestBody = {
             user_id: user?.id?.toString() || null,
             message: originalUserMessage,
@@ -817,7 +815,7 @@ function PistaChat({ user }) {
             thread_id: threadId,
             selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
           };
-          
+
           fetch(`${API_BASE}/chat`, {
             method: "POST",
             headers: {
@@ -828,33 +826,33 @@ function PistaChat({ user }) {
           })
           .then(res => res.json())
           .then(data => {
-            
+
             // Build user message text showing the context
             let userMessageText = originalUserMessage;
             const contextParts = [];
-            
+
             // Add game chips
             if (gameChips.length > 0) {
               contextParts.push(`Game: ${gameChips.map(c => c.name).join(", ")}`);
             }
-            
+
             // Add player chips
             if (playerChips.length > 0) {
               const playerText = playerChips.map(c => `${c.min}-${c.max} players`).join(", ");
               contextParts.push(playerText);
             }
-            
+
             // Add playtime chips
             if (playtimeChips.length > 0) {
               const playtimeText = playtimeChips.map(c => c.label).join(", ");
               contextParts.push(`Playtime: ${playtimeText}`);
             }
-            
+
             // Add required features
             if (Object.keys(requiredArray).length > 0) {
               const featureParts = [];
               Object.keys(requiredArray).forEach(ft => {
-                const featureTypeLabel = ft === "mechanics" ? "Mechanics" : 
+                const featureTypeLabel = ft === "mechanics" ? "Mechanics" :
                                         ft === "categories" ? "Categories" :
                                         ft === "themes" ? "Themes" :
                                         ft === "designers" ? "Designers" :
@@ -863,30 +861,30 @@ function PistaChat({ user }) {
               });
               contextParts.push(`Required: ${featureParts.join("; ")}`);
             }
-            
+
             if (contextParts.length > 0) {
               userMessageText = `${originalUserMessage} [${contextParts.join(" | ")}]`;
             }
-            
+
             // Add collection context if applicable
             if (useCollection) {
               userMessageText += " in my collection";
             }
-            
+
             // Create new user message showing the context
             const newUserMessage = {
               role: "user",
               text: userMessageText,
               messageId: Date.now(),
             };
-            
+
             // Create new assistant message with updated results (instead of overwriting)
             setMessages((prev) => {
               const updated = [...prev];
-              
+
               // Add the new user message
               updated.push(newUserMessage);
-              
+
               // Handle A/B test responses
               if (data.ab_responses && data.ab_responses.length > 0) {
                 const abResp = data.ab_responses[0];
@@ -936,7 +934,7 @@ function PistaChat({ user }) {
                 };
                 updated.push(newAssistantMessage);
               }
-              
+
               return updated;
             });
           })
@@ -946,16 +944,16 @@ function PistaChat({ user }) {
           });
         }
       }
-      
+
       return newRequired;
     });
   };
-  
+
   const removeRequiredFeature = (key) => {
     setActiveRequiredFeatures((prev) => {
       const feature = prev.find(f => f.key === key);
       if (!feature) return prev;
-      
+
       // Remove from requiredFeatures state
       setRequiredFeatures((prevReq) => {
         const newRequired = { ...prevReq };
@@ -967,7 +965,7 @@ function PistaChat({ user }) {
         }
         return newRequired;
       });
-      
+
       return prev.filter(f => f.key !== key);
     });
   };
@@ -975,7 +973,7 @@ function PistaChat({ user }) {
   const sendMessage = async () => {
     // Prevent duplicate sends - if already processing, don't send again
     if (isProcessing) return;
-    
+
     // Check message limit for anonymous users
     if (!user) {
       if (hasExceededLimit(5)) {
@@ -983,22 +981,22 @@ function PistaChat({ user }) {
         return;
       }
     }
-    
+
     // Clear any previous message limit error
     setMessageLimitError(null);
-    
+
     // Allow sending if there's input OR if there are active required features
     if (!input.trim() && activeRequiredFeatures.length === 0) return;
-    
+
     // If input is empty but we have required features, use a default message
-    const messageText = input.trim() || (activeRequiredFeatures.length > 0 
+    const messageText = input.trim() || (activeRequiredFeatures.length > 0
       ? `Find games with ${activeRequiredFeatures.map(f => f.value).join(", ")}`
       : "");
     if (!messageText) return;
 
     const messageId = Date.now();
-    const userMsg = { 
-      role: "user", 
+    const userMsg = {
+      role: "user",
       text: messageText,
       messageId: messageId,
       status: "sending"
@@ -1006,13 +1004,13 @@ function PistaChat({ user }) {
     setMessages((prev) => [...prev, userMsg]);
 
     // Build context - include all feature information for feature-only searches
-    const requiredFeatureValues = activeRequiredFeatures.length > 0 ? 
+    const requiredFeatureValues = activeRequiredFeatures.length > 0 ?
       activeRequiredFeatures.reduce((acc, f) => {
         if (!acc[f.type]) acc[f.type] = [];
         acc[f.type].push(f.value);
         return acc;
       }, {}) : undefined;
-    
+
     const context = {
       last_game_id: gameChips.length > 0 ? gameChips[0].id : null,
       useCollection: useCollection,
@@ -1022,7 +1020,7 @@ function PistaChat({ user }) {
       // Include required features from active required features
       required_feature_values: requiredFeatureValues,
     };
-    
+
     // If useCollection is checked, explicitly set scope in message
     let finalMessageText = messageText;
     if (useCollection && !finalMessageText.toLowerCase().includes("in my collection") && !finalMessageText.toLowerCase().includes("my collection")) {
@@ -1033,7 +1031,7 @@ function PistaChat({ user }) {
     if (!user) {
       incrementMessageCount();
     }
-    
+
     // Set processing state and timeout indicator
     setIsProcessing(true);
     setShowProcessingIndicator(false);
@@ -1074,8 +1072,8 @@ function PistaChat({ user }) {
 
       // Update message status to "sent"
       setMessages((prev) => {
-        return prev.map(msg => 
-          msg.messageId === messageId 
+        return prev.map(msg =>
+          msg.messageId === messageId
             ? { ...msg, status: "sent" }
             : msg
         );
@@ -1114,7 +1112,7 @@ function PistaChat({ user }) {
             ]
           }
         };
-        
+
         setMessages((prev) => [...prev, botMsg]);
       } else {
         // Regular single response
@@ -1131,7 +1129,7 @@ function PistaChat({ user }) {
 
         setMessages((prev) => [...prev, botMsg]);
       }
-      
+
       // Request feedback question after response and attach to message
       if (user) {
         try {
@@ -1172,7 +1170,7 @@ function PistaChat({ user }) {
         }
         return parts.join(", ");
       })();
-      
+
       // Only update input if it's empty or matches exactly what we would set
       // This prevents re-adding removed game names
       if (!currentInputTrimmed || currentInputTrimmed === expectedText) {
@@ -1208,7 +1206,7 @@ function PistaChat({ user }) {
         // Get game name from game chips or extract from user message
         let gameName = null;
         let gameId = data.query_spec.base_game_id;
-        
+
         // Try to find game name from game chips
         const gameChip = gameChips.find(g => g.id === gameId);
         if (gameChip) {
@@ -1224,7 +1222,7 @@ function PistaChat({ user }) {
             }
           }
         }
-        
+
         if (gameName && !doINeedChips.find(c => c.game_id === gameId)) {
           setDoINeedChips([...doINeedChips, { id: Date.now(), name: gameName, game_id: gameId }]);
         }
@@ -1233,8 +1231,8 @@ function PistaChat({ user }) {
       console.error("Failed to send message:", err);
       // Update message status to "error"
       setMessages((prev) => {
-        return prev.map(msg => 
-          msg.messageId === messageId 
+        return prev.map(msg =>
+          msg.messageId === messageId
             ? { ...msg, status: "error" }
             : msg
         );
@@ -1250,6 +1248,35 @@ function PistaChat({ user }) {
       }
     }
   };
+
+  // Define onAddToSearch callback before return
+  const onAddToSearchCallback = useCallback((text, type, gameId) => {
+    // If it's a game, add to gameChips using functional update to avoid stale closure
+    if (type === 'game' && gameId) {
+      setGameChips((currentChips) => {
+        // Check if game already in chips
+        if (!currentChips.find(g => g.id === gameId)) {
+          return [...currentChips, { id: gameId, name: text }];
+        }
+        return currentChips;
+      });
+    }
+
+    // Add text to input, prefixed with @ if not already there
+    const searchText = text.startsWith('@') ? text : `@${text}`;
+    setInput((currentInput) => {
+      const trimmed = currentInput.trim();
+      return trimmed ? `${trimmed} ${searchText}` : searchText;
+    });
+
+    // Focus input and trigger search
+    if (inputRef) {
+      inputRef.focus();
+      const cursorPos = inputRef.selectionStart || 0;
+      setCursorPosition(cursorPos);
+      handleGameSearch(text);
+    }
+  }, [inputRef, handleGameSearch]);
 
   return (
     <div className="pista-chat-container">
@@ -1314,8 +1341,8 @@ function PistaChat({ user }) {
           </div>
         )}
         <div className="chat-window">
-          <MessageList 
-            messages={messages} 
+          <MessageList
+            messages={messages}
             user={user}
             onGameClick={(game) => {
               // Only allow features editor for admin users
@@ -1326,6 +1353,7 @@ function PistaChat({ user }) {
                 setMarketplaceGame({ id: game.game_id, name: game.name });
               }
             }}
+            onAddToSearch={onAddToSearchCallback}
             onLikeDislike={handleLikeDislike}
             onFeedbackResponse={handleFeedbackResponse}
             helpfulQuestion={helpfulQuestion}
@@ -1340,10 +1368,10 @@ function PistaChat({ user }) {
               setInput((currentInput) => {
                 const trimmed = (currentInput || "").trim();
                 const newInput = trimmed + (trimmed ? ", " : "") + featureValue;
-                
+
                 // Add feature as required feature chip (without auto-requery)
                 handleRequireFeature(messageIndex, featureType, featureValue, false);
-                
+
                 return newInput;
               });
             }}
@@ -1370,7 +1398,7 @@ function PistaChat({ user }) {
           ))}
           {gameChips.map((game) => (
             <div className="chip game-chip" key={game.id}>
-              <span 
+              <span
                 onClick={() => handleGameChipClick(game)}
                 style={{ cursor: "pointer", flex: 1 }}
                 title="Click to add to input"
@@ -1388,7 +1416,7 @@ function PistaChat({ user }) {
           ))}
           {doINeedChips.map((chip) => (
             <div className="chip game-chip" key={chip.id}>
-              <span 
+              <span
                 onClick={() => handleDoINeedChipClick(chip)}
                 style={{ cursor: "pointer", flex: 1 }}
                 title="Click to ask again"
@@ -1499,7 +1527,7 @@ function PistaChat({ user }) {
               Processing request...
             </div>
           )}
-          
+
           {/* Search dropdown for @ mentions - shows both games and features */}
           {atMentionActive && showGameSearch && (gameSearchResults.length > 0 || featureSearchResults.length > 0) && (
             <div className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000, maxHeight: "400px", overflowY: "auto" }}>
@@ -1513,7 +1541,7 @@ function PistaChat({ user }) {
                     const textBeforeCursor = input.substring(0, cursorPosition);
                     const lastAtIndex = textBeforeCursor.lastIndexOf('@');
                     const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
-                    
+
                     const highlightMatch = (text, query) => {
                       if (!query) return text;
                       const words = query.split(/\s+/).filter(w => w.length > 0);
@@ -1521,11 +1549,11 @@ function PistaChat({ user }) {
                       const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
                       const regex = new RegExp(`(${pattern})`, 'gi');
                       const parts = text.split(regex);
-                      return parts.map((part, idx) => 
+                      return parts.map((part, idx) =>
                         regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
                       );
                     };
-                    
+
                     return (
                       <div
                         key={game.id}
@@ -1550,7 +1578,7 @@ function PistaChat({ user }) {
                   })}
                 </>
               )}
-              
+
               {/* Features section - shown after games, ordered: mechanics, categories, designers, artists */}
               {featureSearchResults.length > 0 && (
                 <>
@@ -1568,7 +1596,7 @@ function PistaChat({ user }) {
                     const textBeforeCursor = input.substring(0, cursorPosition);
                     const lastAtIndex = textBeforeCursor.lastIndexOf('@');
                     const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
-                    
+
                     const highlightMatch = (text, query) => {
                       if (!query) return text;
                       const words = query.split(/\s+/).filter(w => w.length > 0);
@@ -1576,11 +1604,11 @@ function PistaChat({ user }) {
                       const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
                       const regex = new RegExp(`(${pattern})`, 'gi');
                       const parts = text.split(regex);
-                      return parts.map((part, idx) => 
+                      return parts.map((part, idx) =>
                         regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
                       );
                     };
-                    
+
                     return (
                       <div
                         key={`${feature.type}-${feature.id}`}
@@ -1608,7 +1636,7 @@ function PistaChat({ user }) {
               <div className="context-chips-display" style={{ marginBottom: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
                 {gameChips.map((game) => (
                   <div className="chip game-chip" key={game.id}>
-                    <span 
+                    <span
                       onClick={() => handleGameChipClick(game)}
                       style={{ cursor: "pointer", flex: 1 }}
                       title="Click to add to input"
@@ -1670,9 +1698,9 @@ function PistaChat({ user }) {
                     {activeRequiredFeatures.map((feature, idx) => (
                       <span key={feature.key} style={{ display: "inline" }}>
                         {idx > 0 && <span style={{ margin: "0 0.25rem" }}>, </span>}
-                        <span 
-                          style={{ color: "#1976d2", cursor: "pointer", textDecoration: "underline" }} 
-                          onClick={() => removeRequiredFeature(feature.key)} 
+                        <span
+                          style={{ color: "#1976d2", cursor: "pointer", textDecoration: "underline" }}
+                          onClick={() => removeRequiredFeature(feature.key)}
                           title="Click to remove"
                         >
                           {feature.type === "mechanics" && "⚙️ "}
@@ -1718,7 +1746,7 @@ function PistaChat({ user }) {
                     // Check if game is selected
                     const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
                     const currentContext = input.trim() || null;
-                    
+
                     if (!lastGameId) {
                       // Prompt user to select a game first
                       alert("Please select a game first using @ mention in the search box");
@@ -1728,7 +1756,7 @@ function PistaChat({ user }) {
                       }
                       return;
                     }
-                    
+
                     // Show fake-door message immediately (no file upload needed)
                     try {
                       const res = await fetch(`${API_BASE}/image/generate`, {
@@ -1742,7 +1770,7 @@ function PistaChat({ user }) {
                           context: currentContext,
                         }),
                       });
-                      
+
                       if (res.ok) {
                         const data = await res.json();
                         const fakeMsg = {
@@ -1760,10 +1788,10 @@ function PistaChat({ user }) {
                       alert("Failed to process request");
                     }
                   }}
-                  style={{ 
-                    padding: "0.5rem", 
-                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed", 
-                    border: "1px solid #ddd", 
+                  style={{
+                    padding: "0.5rem",
+                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed",
+                    border: "1px solid #ddd",
                     borderRadius: "4px",
                     backgroundColor: gameChips.length > 0 ? "var(--bg-secondary, #f5f5f5)" : "var(--bg-disabled, #e0e0e0)",
                     display: "flex",
@@ -1784,12 +1812,12 @@ function PistaChat({ user }) {
                     // Get current game context
                     const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
                     const currentContext = input.trim() || null;
-                    
+
                     if (!lastGameId) {
                       alert("Please select a game first to explain its rules");
                       return;
                     }
-                    
+
                     try {
                       const res = await fetch(`${API_BASE}/rules/explain`, {
                         method: "POST",
@@ -1802,7 +1830,7 @@ function PistaChat({ user }) {
                           context: currentContext,
                         }),
                       });
-                      
+
                       if (res.ok) {
                         const data = await res.json();
                         const fakeMsg = {
@@ -1820,10 +1848,10 @@ function PistaChat({ user }) {
                       alert("Failed to request rules explanation");
                     }
                   }}
-                  style={{ 
-                    padding: "0.5rem", 
-                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed", 
-                    border: "1px solid #ddd", 
+                  style={{
+                    padding: "0.5rem",
+                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed",
+                    border: "1px solid #ddd",
                     borderRadius: "4px",
                     backgroundColor: gameChips.length > 0 ? "var(--bg-secondary, #f5f5f5)" : "var(--bg-disabled, #e0e0e0)",
                     display: "flex",
@@ -1844,12 +1872,12 @@ function PistaChat({ user }) {
                     // Get current game context
                     const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
                     const currentContext = input.trim() || null;
-                    
+
                     if (!lastGameId) {
                       alert("Please select a game first to open scoring pad");
                       return;
                     }
-                    
+
                     try {
                       const res = await fetch(`${API_BASE}/scoring/pad`, {
                         method: "POST",
@@ -1862,9 +1890,9 @@ function PistaChat({ user }) {
                           context: currentContext,
                         }),
                       });
-                      
+
                       const data = await res.json();
-                      
+
                       if (data.success && data.fake_door) {
                         // Show fake-door message
                         alert(data.message);
@@ -1879,10 +1907,10 @@ function PistaChat({ user }) {
                       alert("Failed to open scoring pad");
                     }
                   }}
-                  style={{ 
-                    padding: "0.5rem", 
-                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed", 
-                    border: "1px solid #ddd", 
+                  style={{
+                    padding: "0.5rem",
+                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed",
+                    border: "1px solid #ddd",
                     borderRadius: "4px",
                     backgroundColor: gameChips.length > 0 ? "var(--bg-secondary, #f5f5f5)" : "var(--bg-disabled, #e0e0e0)",
                     display: "flex",
@@ -1899,8 +1927,8 @@ function PistaChat({ user }) {
                 </button>
               </div>
             </div>
-            <button 
-              onClick={sendMessage} 
+            <button
+              onClick={sendMessage}
               disabled={isProcessing || (!input.trim() && activeRequiredFeatures.length === 0)}
               title={isProcessing ? "Processing request..." : "Send message"}
               style={{
@@ -1916,48 +1944,48 @@ function PistaChat({ user }) {
           </div>
         </div>
       </div>
-      
+
       {/* Feedback Question Modal */}
     </div>
   );
 }
 
-function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, onFeedbackResponse, helpfulQuestion, onRequireFeature, showDislikeInput, dislikeDetails, setDislikeDetails, setShowDislikeInput, handleDislikeSubmit }) {
+function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, onFeedbackResponse, helpfulQuestion, onRequireFeature, showDislikeInput, dislikeDetails, setDislikeDetails, setShowDislikeInput, handleDislikeSubmit, onAddToSearch }) {
   const messagesEndRef = useRef(null);
-  
+
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages]);
-  
+
   const highlightText = (text, querySpec) => {
     if (!querySpec || !text) return text;
-    
+
     const intent = querySpec.intent || "";
     const constraints = querySpec.constraints || {};
-    const isDissimilarity = intent.includes("different") || 
-                           Object.keys(constraints).some(k => 
-                             constraints[k].jaccard_max !== undefined || 
+    const isDissimilarity = intent.includes("different") ||
+                           Object.keys(constraints).some(k =>
+                             constraints[k].jaccard_max !== undefined ||
                              constraints[k].max_overlap !== undefined
                            );
-    const isSimilarity = intent.includes("similar") || 
+    const isSimilarity = intent.includes("similar") ||
                         intent.includes("compare") ||
-                        Object.keys(constraints).some(k => 
-                          constraints[k].jaccard_min !== undefined || 
+                        Object.keys(constraints).some(k =>
+                          constraints[k].jaccard_min !== undefined ||
                           constraints[k].min_overlap !== undefined
                         );
-    
+
     // Split text into sentences and highlight relevant parts
     const sentences = text.split(/([.!?]\s+)/);
     return sentences.map((sentence, i) => {
-      if (isDissimilarity && (sentence.toLowerCase().includes("different") || 
+      if (isDissimilarity && (sentence.toLowerCase().includes("different") ||
                                sentence.toLowerCase().includes("dissimilar") ||
                                sentence.toLowerCase().includes("not"))) {
         return <span key={i} className="highlight-different">{sentence}</span>;
       }
-      if (isSimilarity && (sentence.toLowerCase().includes("similar") || 
+      if (isSimilarity && (sentence.toLowerCase().includes("similar") ||
                            sentence.toLowerCase().includes("same") ||
                            sentence.toLowerCase().includes("compare") ||
                            sentence.toLowerCase().includes("overlap"))) {
@@ -1966,7 +1994,7 @@ function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, 
       return sentence;
     });
   };
-  
+
   return (
     <div className="messages">
       {messages.length === 0 ? (
@@ -1975,7 +2003,7 @@ function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, 
         messages.map((m, idx) => (
           <div key={idx} className={`msg msg--${m.role}`}>
             <div className="msg-text">
-              {m.role === "assistant" && m.querySpec 
+              {m.role === "assistant" && m.querySpec
                 ? highlightText(m.text, m.querySpec)
                 : m.text}
             </div>
@@ -1994,20 +2022,22 @@ function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, 
               <img src={m.image} alt="Generated" className="generated-image" />
             )}
             {m.abTest ? (
-              <ABTestResults 
+              <ABTestResults
                 abTest={m.abTest}
                 onGameClick={onGameClick}
                 onRequireFeature={onRequireFeature}
                 messageIndex={idx}
                 onFeedbackResponse={onFeedbackResponse}
+                onAddToSearch={onAddToSearch}
               />
             ) : m.results && m.results.length > 0 && (
-              <GameResultList 
-                results={m.results} 
+              <GameResultList
+                results={m.results}
                 onGameClick={onGameClick}
                 onRequireFeature={onRequireFeature}
                 messageIndex={idx}
                 querySpec={m.querySpec}
+                onAddToSearch={onAddToSearch}
               />
             )}
             {m.role === "assistant" && user && helpfulQuestion && !m.isFakeDoor && (
@@ -2089,7 +2119,7 @@ function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, 
   );
 }
 
-function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand, querySpec }) {
+function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand, querySpec, onAddToSearch }) {
   // If expandedGames is passed as prop (for A/B tests), use it; otherwise create local state
   const [localExpanded, setLocalExpanded] = useState(new Set());
   const isExpanded = (gameId) => {
@@ -2113,25 +2143,25 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
       });
     }
   };
-  
+
   if (!results || results.length === 0) {
     return null;
   }
-  
+
   return (
     <div className="game-results">
       {results
         .filter(r => r && r.game_id) // Filter out invalid results
         .map((r) => {
           // Check if this is a collection_recommendation result (has missing_* or extra_* fields)
-          const isCollectionRecommendation = querySpec?.intent === "collection_recommendation" && 
+          const isCollectionRecommendation = querySpec?.intent === "collection_recommendation" &&
             (r.missing_mechanics || r.missing_categories || r.extra_mechanics || r.extra_categories);
-          
+
           // Extract features - use all features if available (feature-only search), otherwise use shared features (similarity search)
           const sharedFeatures = [];
           // Check if this is a feature-only search result (has all features, not shared)
           const hasAllFeatures = r.mechanics || r.categories || r.designers_list || r.families;
-          
+
           if (hasAllFeatures) {
             // Feature-only search: use all features
             if (r.mechanics) {
@@ -2161,7 +2191,7 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
               r.shared_families.forEach(f => sharedFeatures.push({ type: "families", value: f }));
             }
           }
-          
+
           // Extract missing and extra features for collection recommendation
           const missingFeatures = [];
           const extraFeatures = [];
@@ -2191,18 +2221,18 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
               r.extra_families.forEach(f => extraFeatures.push({ type: "families", value: f }));
             }
           }
-          
+
           // Check if this game is unique to this variant (for highlighting)
           const isUnique = variant && differences && (
             (variant === "A" && differences.onlyInA.some(g => g.game_id === r.game_id)) ||
             (variant === "B" && differences.onlyInB.some(g => g.game_id === r.game_id))
           );
-          
+
           return (
-            <div 
+            <div
               className={`game-card ${isUnique ? "ab-test-unique" : ""}`}
               key={r.game_id}
-              style={{ 
+              style={{
                 border: isUnique ? "2px solid #1976d2" : undefined,
                 backgroundColor: isUnique ? "rgba(25, 118, 210, 0.05)" : undefined,
                 display: "flex",
@@ -2212,23 +2242,46 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
             >
               <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start", flex: 1 }}>
                 {r.thumbnail && (
-                  <img 
-                    src={r.thumbnail} 
+                  <img
+                    src={r.thumbnail}
                     alt={r.name || "Game"}
                     style={{ width: "80px", height: "80px", objectFit: "cover", borderRadius: "4px" }}
                   />
                 )}
                 <div style={{ flex: 1 }}>
-                  <div 
+                  <div
                     className="game-card__title"
-                    style={{ cursor: "default" }}
+                    style={{ cursor: "pointer", color: "#1976d2" }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onAddToSearch) {
+                        onAddToSearch(r.name || `Game ${r.game_id}`, 'game', r.game_id);
+                      }
+                    }}
+                    title="Click to search for this game"
                   >
                     {r.name || `Game ${r.game_id}`}
                   </div>
                   <div className="game-card__meta">
                     {r.designers && r.designers.length > 0 && (
                       <span style={{ marginRight: "1rem", fontSize: "0.9em", opacity: 0.8 }}>
-                        👤 {r.designers.join(", ")}
+                        👤 {r.designers.map((designer, idx) => (
+                          <span key={idx}>
+                            <span
+                              style={{ cursor: "pointer", color: "#1976d2", textDecoration: "underline" }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (onAddToSearch) {
+                                  onAddToSearch(designer, 'designer');
+                                }
+                              }}
+                              title="Click to search for this designer"
+                            >
+                              {designer}
+                            </span>
+                            {idx < r.designers.length - 1 && ", "}
+                          </span>
+                        ))}
                       </span>
                     )}
                     {r.year_published && (
@@ -2238,9 +2291,9 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
                     )}
                     {/* Show similarity score - especially important for collection recommendation */}
                     {(r.similarity_score !== undefined && r.similarity_score !== null) ||
-                     (r.final_score !== undefined && r.final_score !== null) || 
+                     (r.final_score !== undefined && r.final_score !== null) ||
                      (r.embedding_similarity !== undefined && r.embedding_similarity !== null) ? (
-                      <span style={{ 
+                      <span style={{
                         fontWeight: isCollectionRecommendation ? "bold" : "normal",
                         color: isCollectionRecommendation ? "#1976d2" : "inherit"
                       }}>
@@ -2374,36 +2427,41 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
                       )}
                     </div>
                   ) : (
-                    <div className="shared-features-chips" style={{ marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.25rem", minHeight: "1.5rem" }}>
-                      {sharedFeatures.length > 0 ? (
-                        sharedFeatures.map((feature, idx) => (
-                          <div 
-                            key={`${feature.type}-${feature.value}-${idx}`}
-                            className="shared-feature-chip"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (onRequireFeature) {
-                                onRequireFeature(messageIndex, feature.type, feature.value);
-                              }
-                            }}
-                            title={`Click to require ${feature.value} (exclude games without this feature)`}
-                            style={{
-                              padding: "0.25rem 0.5rem",
-                              backgroundColor: "var(--bg-secondary, #f5f5f5)",
-                              border: "1px solid var(--border-color, #ddd)",
-                              borderRadius: "4px",
-                              cursor: "pointer",
-                              fontSize: "0.85rem",
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "0.25rem"
-                            }}
-                          >
-                            <span>{feature.value}</span>
-                            <span className="shared-feature-chip-add" style={{ fontWeight: "bold", color: "#1976d2" }}>+</span>
+                    <div style={{ marginTop: "0.5rem" }}>
+                      {/* Show shared features with highlighting similar to "Do I need" */}
+                      {sharedFeatures.length > 0 && (
+                        <div style={{ marginBottom: "0.5rem" }}>
+                          <div style={{ fontSize: "0.85rem", fontWeight: "bold", marginBottom: "0.25rem", color: "#4caf50" }}>
+                            ✓ Similarities:
                           </div>
-                        ))
-                      ) : (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+                            {sharedFeatures.map((feature, idx) => (
+                              <span
+                                key={`shared-${feature.type}-${feature.value}-${idx}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (onRequireFeature) {
+                                    onRequireFeature(messageIndex, feature.type, feature.value);
+                                  }
+                                }}
+                                title={`Click to require ${feature.value} (exclude games without this feature)`}
+                                style={{
+                                  padding: "0.25rem 0.5rem",
+                                  backgroundColor: "#e8f5e9",
+                                  border: "1px solid #4caf50",
+                                  borderRadius: "4px",
+                                  fontSize: "0.85rem",
+                                  color: "#2e7d32",
+                                  cursor: "pointer"
+                                }}
+                              >
+                                {feature.value}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {sharedFeatures.length === 0 && (
                         <span style={{ fontSize: "0.8rem", opacity: 0.6, fontStyle: "italic" }}>
                           No shared features available
                         </span>
@@ -2411,10 +2469,10 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
                     </div>
                   )}
                   {r.language_dependence && r.language_dependence.level >= 4 && r.language_dependence.level !== 81 && r.language_dependence.level !== 51 && (
-                    <div style={{ 
-                      marginTop: "0.5rem", 
-                      padding: "0.5rem", 
-                      backgroundColor: "#fff3cd", 
+                    <div style={{
+                      marginTop: "0.5rem",
+                      padding: "0.5rem",
+                      backgroundColor: "#fff3cd",
                       border: "1px solid #ffc107",
                       borderRadius: "4px",
                       fontSize: "0.9em",
@@ -2457,9 +2515,9 @@ function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, 
     );
   }
 
-function ABTestResults({ abTest, onGameClick, onRequireFeature, messageIndex, onFeedbackResponse }) {
+function ABTestResults({ abTest, onGameClick, onRequireFeature, messageIndex, onFeedbackResponse, onAddToSearch }) {
   const [expandedGames, setExpandedGames] = useState({ a: new Set(), b: new Set() });
-  
+
   const toggleExpand = (variant, gameId) => {
     setExpandedGames((prev) => {
       const newExpanded = { ...prev };
@@ -2474,23 +2532,23 @@ function ABTestResults({ abTest, onGameClick, onRequireFeature, messageIndex, on
       return newExpanded;
     });
   };
-  
+
   // Find differences between A and B results
   const getDifferences = () => {
     const resultsA = abTest.response_a.results || [];
     const resultsB = abTest.response_b.results || [];
     const gameIdsA = new Set(resultsA.map(r => r.game_id));
     const gameIdsB = new Set(resultsB.map(r => r.game_id));
-    
+
     const onlyInA = resultsA.filter(r => !gameIdsB.has(r.game_id));
     const onlyInB = resultsB.filter(r => !gameIdsA.has(r.game_id));
     const inBoth = resultsA.filter(r => gameIdsB.has(r.game_id));
-    
+
     return { onlyInA, onlyInB, inBoth };
   };
-  
+
   const differences = getDifferences();
-  
+
   return (
     <div className="ab-test-results">
       <div className="ab-test-header">
@@ -2499,8 +2557,8 @@ function ABTestResults({ abTest, onGameClick, onRequireFeature, messageIndex, on
       <div className="ab-test-columns">
         <div className="ab-test-column">
           <div className="ab-test-label">{abTest.response_a.label}</div>
-          <GameResultList 
-            results={abTest.response_a.results} 
+          <GameResultList
+            results={abTest.response_a.results}
             onGameClick={onGameClick}
             onRequireFeature={onRequireFeature}
             messageIndex={messageIndex}
@@ -2508,12 +2566,13 @@ function ABTestResults({ abTest, onGameClick, onRequireFeature, messageIndex, on
             differences={differences}
             expandedGames={expandedGames.a}
             toggleExpand={(gameId) => toggleExpand("A", gameId)}
+            onAddToSearch={onAddToSearch}
           />
         </div>
         <div className="ab-test-column">
           <div className="ab-test-label">{abTest.response_b.label}</div>
-          <GameResultList 
-            results={abTest.response_b.results} 
+          <GameResultList
+            results={abTest.response_b.results}
             onGameClick={onGameClick}
             onRequireFeature={onRequireFeature}
             messageIndex={messageIndex}
@@ -2521,6 +2580,7 @@ function ABTestResults({ abTest, onGameClick, onRequireFeature, messageIndex, on
             differences={differences}
             expandedGames={expandedGames.b}
             toggleExpand={(gameId) => toggleExpand("B", gameId)}
+            onAddToSearch={onAddToSearch}
           />
         </div>
       </div>
@@ -2579,11 +2639,11 @@ function FeedbackQuestionInline({ question, messageIndex, onSubmit }) {
 
   // Ensure options is an array
   const options = question.options || [];
-  
+
   return (
     <div className="feedback-question-inline">
       <div className="feedback-question-text">{question.question_text}</div>
-      
+
       {question.question_type === "single_select" && options.length > 0 ? (
         <div className="feedback-options-inline">
           {options.map((option, idx) => {

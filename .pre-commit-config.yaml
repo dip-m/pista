@@ -1,0 +1,75 @@
+# Pre-commit hooks configuration
+# Install with: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$'
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: ['--unsafe']  # Allow custom tags
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=5000']  # Allow larger files like FAISS index
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+
+  # Python code formatting
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+        language_version: python3.12
+        files: ^backend/
+        args: ['--line-length=127']
+
+  # Python linting
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.0.0
+    hooks:
+      - id: flake8
+        files: ^backend/
+        args: ['--max-line-length=127', '--max-complexity=10', '--extend-ignore=E203,W503,E501,D,C901,F841,F401,F402,F541,E402']
+        additional_dependencies: [flake8-docstrings]
+
+  # JavaScript/React linting - disabled for now due to ESLint 9.0 config issues
+  # - repo: https://github.com/pre-commit/mirrors-eslint
+  #   rev: v9.0.0
+  #   hooks:
+  #     - id: eslint
+  #       files: ^frontend/src/.*\.(js|jsx)$
+  #       types: [file]
+  #       additional_dependencies:
+  #         - eslint@9.0.0
+  #         - eslint-plugin-react@7.33.0
+  #         - eslint-plugin-react-hooks@4.6.0
+  #       args: ['--fix']
+
+  # Backend tests (runs unit and integration tests only for speed)
+  - repo: local
+    hooks:
+      - id: backend-tests
+        name: Backend Tests
+        entry: python run_tests.py backend/tests/unit/ backend/tests/integration/ -v --tb=short -x --no-cov
+        language: system
+        files: ^backend/.*\.py$
+        pass_filenames: false
+        always_run: false
+
+  # Frontend tests
+  - repo: local
+    hooks:
+      - id: frontend-tests
+        name: Frontend Tests
+        entry: node frontend/test-ci.js
+        language: system
+        files: ^frontend/src/.*\.(js|jsx)$
+        pass_filenames: false
+        always_run: false
+        require_serial: true

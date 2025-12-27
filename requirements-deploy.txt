@@ -2,7 +2,7 @@
 # These are only needed for embedding generation, not runtime
 
 # Core web framework
-fastapi 
+fastapi
 uvicorn[standard]
 PyJWT
 python-multipart
@@ -34,4 +34,3 @@ tqdm
 
 # Your backend uses pre-computed FAISS embeddings, so sentence-transformers
 # is not needed at runtime. It's only used for generating embeddings locally.
-

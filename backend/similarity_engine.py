@@ -5,7 +5,8 @@ import os
 
 import numpy as np
 import faiss
-import sqlite3
+import psycopg2
+from psycopg2.extensions import connection as psycopg2_connection
 
 from backend.reasoning_utils import get_game_features, compute_meta_similarity, build_reason_summary
 from backend.logger_config import logger
@@ -13,7 +14,7 @@ from .db import execute_query
 
 
 class SimilarityEngine:
-    def __init__(self, conn: sqlite3.Connection, index, id_map: List[int]):
+    def __init__(self, conn: psycopg2_connection, index, id_map: List[int]):
         self.conn = conn
         self.index = index
         self.id_map = id_map
@@ -24,11 +25,7 @@ class SimilarityEngine:
     def _fetch_embedding(self, game_id: int) -> np.ndarray:
         """Fetch embedding for a game, with error handling."""
         try:
-            cur = execute_query(
-                self.conn,
-                "SELECT vector_json FROM game_embeddings WHERE game_id = ?",
-                (game_id,)
-            )
+            cur = execute_query(self.conn, "SELECT vector_json FROM game_embeddings WHERE game_id = %s", (game_id,))
             row = cur.fetchone()
             if not row:
                 logger.warning(f"No embedding found for game_id={game_id}")
@@ -36,12 +33,12 @@ class SimilarityEngine:
             vec = np.array(json.loads(row[0]), dtype="float32")
             faiss.normalize_L2(vec.reshape(1, -1))
             return vec
-        except (ValueError, json.JSONDecodeError, sqlite3.Error, Exception) as e:
+        except (ValueError, json.JSONDecodeError, psycopg2.Error, Exception) as e:
             logger.error(f"Error fetching embedding for game_id={game_id}: {e}", exc_info=True)
             raise
 
     def _fetch_name(self, game_id: int) -> str:
-        cur = execute_query(self.conn, "SELECT name FROM games WHERE id = ?", (game_id,))
+        cur = execute_query(self.conn, "SELECT name FROM games WHERE id = %s", (game_id,))
         row = cur.fetchone()
         return row[0] if row else f"(id={game_id})"
 
@@ -66,11 +63,11 @@ class SimilarityEngine:
         exclude_features: list of feature types to exclude matches on
         """
         logger.debug(f"Searching similar to game_id={game_id}, top_k={top_k}, constraints={constraints}")
-        
+
         # Initialize sims and idxs to avoid UnboundLocalError if exception occurs early
         sims = np.array([])
         idxs = []
-        
+
         try:
             constraints = constraints or {}
             query_vec = self._fetch_embedding(game_id).reshape(1, -1)
@@ -82,7 +79,7 @@ class SimilarityEngine:
                 # For collections <= 500 games, compute similarity directly for all games in collection
                 use_direct_collection_search = True
                 logger.debug(f"Using direct collection search for {len(allowed_ids)} games")
-            
+
             if use_direct_collection_search:
                 # Get embeddings for all games in collection
                 collection_ids = list(allowed_ids)
@@ -97,13 +94,13 @@ class SimilarityEngine:
                         valid_collection_ids.append(gid)
                     except Exception:
                         continue
-                
+
                 if collection_embeddings:
                     # Compute cosine similarity for all games in collection
                     collection_matrix = np.vstack(collection_embeddings)
                     faiss.normalize_L2(collection_matrix)
                     similarities = np.dot(collection_matrix, query_vec.T).flatten()
-                    
+
                     # Sort by similarity descending
                     sorted_indices = np.argsort(similarities)[::-1]
                     sims = similarities[sorted_indices]
@@ -123,7 +120,6 @@ class SimilarityEngine:
                 idxs = idxs[0]
                 # Convert index positions to game IDs
                 idxs = [self.id_map[ix] if 0 <= ix < len(self.id_map) else -1 for ix in idxs]
-                
 
             if explain:
                 try:
@@ -132,19 +128,24 @@ class SimilarityEngine:
                         raise ValueError("game_id cannot be None")
                     game_id = int(game_id)  # Ensure it's an integer
                     base_features = get_game_features(self.conn, game_id)
-                except (ValueError, TypeError, sqlite3.Error) as e:
+                except (ValueError, TypeError, psycopg2.Error) as e:
                     logger.warning(f"Error getting base features for game_id={game_id}: {e}")
                     base_features = None
                     explain = False  # Fall back to embedding-only search
         except Exception as e:
             logger.warning(f"Error getting details for game_id={game_id}: {e}")
             explain = False  # Fall back to embedding-only search
-        
+
         results: List[Dict[str, Any]] = []
         total_candidates = 0
-        filtered_out = {"invalid_index": 0, "self_excluded": 0, "not_in_allowed": 0, "failed_explain": 0, "required_features": 0}
-        
-        
+        filtered_out = {
+            "invalid_index": 0,
+            "self_excluded": 0,
+            "not_in_allowed": 0,
+            "failed_explain": 0,
+            "required_features": 0,
+        }
+
         for sim, gid_or_ix in zip(sims, idxs):
             total_candidates += 1
             # In direct collection search, gid_or_ix is already the game ID
@@ -172,15 +173,15 @@ class SimilarityEngine:
             except (ValueError, TypeError):
                 filtered_out["invalid_index"] += 1
                 continue
-            
+
             # Fetch additional game data including num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description, designers for reordering
             try:
                 cur = execute_query(
                     self.conn,
-                    "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = ?",
-                    (gid,)
+                    "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = %s",
+                    (gid,),
                 )
-            except (sqlite3.Error, Exception) as e:
+            except (psycopg2.Error, Exception) as e:
                 logger.warning(f"SQL error fetching game {gid}: {e}")
                 filtered_out["failed_explain"] += 1
                 continue
@@ -195,7 +196,7 @@ class SimilarityEngine:
             min_players = int(game_row[7]) if game_row and game_row[7] is not None else None
             max_players = int(game_row[8]) if game_row and game_row[8] is not None else None
             description = game_row[9] if game_row and game_row[9] else None
-            
+
             # Get designers for this game
             designers = []
             try:
@@ -203,13 +204,13 @@ class SimilarityEngine:
                     self.conn,
                     """SELECT d.name FROM designers d
                        JOIN game_designers gd ON gd.designer_id = d.id
-                       WHERE gd.game_id = ? ORDER BY d.name""",
-                    (gid,)
+                       WHERE gd.game_id = %s ORDER BY d.name""",
+                    (gid,),
                 )
                 designers = [row[0] for row in cur_designers.fetchall()]
-            except (sqlite3.Error, Exception):
+            except (psycopg2.Error, Exception):
                 pass
-            
+
             # Early exclusion: Check max_players constraint before expensive explain mode
             player_constraints = constraints.get("players", {})
             if player_constraints:
@@ -219,7 +220,7 @@ class SimilarityEngine:
                     if max_players < exact_players:
                         filtered_out["failed_explain"] += 1
                         continue
-            
+
             # Parse ranks_json to get best rank (overall, or category-specific)
             rank = None
             if ranks_json_str:
@@ -232,7 +233,7 @@ class SimilarityEngine:
                         rank_list = ranks_data.get("ranks", [])
                     elif isinstance(ranks_data, list):
                         rank_list = ranks_data
-                    
+
                     if isinstance(rank_list, list) and len(rank_list) > 0:
                         # Look for overall rank (friendlyname contains "boardgame" or name="boardgame")
                         for rank_entry in rank_list:
@@ -262,7 +263,7 @@ class SimilarityEngine:
                 except (json.JSONDecodeError, KeyError, TypeError) as e:
                     logger.debug(f"Error parsing ranks_json for game {gid}: {e}")
                     pass
-            
+
             # Parse polls_json to get language_dependence
             language_dependence = None
             if polls_json_str:
@@ -282,21 +283,17 @@ class SimilarityEngine:
                                     try:
                                         level_num = int(level)
                                         value = result.get("value", "")
-                                        language_dependence = {
-                                            "level": level_num,
-                                            "value": value,
-                                            "numvotes": numvotes
-                                        }
+                                        language_dependence = {"level": level_num, "value": value, "numvotes": numvotes}
                                     except (ValueError, TypeError):
                                         pass
                 except (json.JSONDecodeError, KeyError, TypeError) as e:
                     logger.debug(f"Error parsing polls_json for game {gid}: {e}")
                     pass
-            
+
             # Ensure we have at least a name and game_id
             if not game_name:
                 game_name = self._fetch_name(gid)
-            
+
             record: Dict[str, Any] = {
                 "game_id": gid,
                 "name": game_name or f"Game {gid}",
@@ -315,41 +312,49 @@ class SimilarityEngine:
             if required_feature_values:
                 try:
                     other_features_check = get_game_features(self.conn, gid)
-                except (ValueError, sqlite3.Error) as e:
+                except (ValueError, psycopg2.Error) as e:
                     logger.warning(f"Error getting features for game_id={gid} to check required features: {e}")
                     # If we can't get features, skip this game (it likely doesn't exist or has invalid data)
                     continue
-                
+
                 should_skip = False
                 for feature_type, required_values in required_feature_values.items():
                     # Normalize feature type name (e.g., "mechanics" -> check "mechanics" key)
                     feature_key = feature_type
                     if feature_key in other_features_check:
-                        feature_set = other_features_check[feature_key] if isinstance(other_features_check[feature_key], set) else set(other_features_check[feature_key])
+                        feature_set = (
+                            other_features_check[feature_key]
+                            if isinstance(other_features_check[feature_key], set)
+                            else set(other_features_check[feature_key])
+                        )
                         # Normalize feature names for case-insensitive comparison
                         # Filter out None values before normalizing
                         feature_set_normalized = {f.lower().strip() for f in feature_set if f is not None}
                         required_values_normalized = {v.lower().strip() for v in required_values if v is not None}
-                        
+
                         # Check if ALL required values are present (case-insensitive)
                         missing_values = required_values_normalized - feature_set_normalized
                         if missing_values:
-                            logger.info(f"Game {gid} ({other_features_check.get('name', 'unknown')}) missing required {feature_type} values: {missing_values}. Required: {required_values}, Has: {feature_set}")
+                            logger.info(
+                                f"Game {gid} ({other_features_check.get('name', 'unknown')}) missing required {feature_type} values: {missing_values}. Required: {required_values}, Has: {feature_set}"
+                            )
                             should_skip = True
                             break
                     else:
                         # Game doesn't have this feature type at all, so it's missing required values
-                        logger.info(f"Game {gid} ({other_features_check.get('name', 'unknown')}) missing required {feature_type} values {required_values} (no {feature_type} at all)")
+                        logger.info(
+                            f"Game {gid} ({other_features_check.get('name', 'unknown')}) missing required {feature_type} values {required_values} (no {feature_type} at all)"
+                        )
                         should_skip = True
                         break
                 if should_skip:
                     filtered_out["required_features"] = filtered_out.get("required_features", 0) + 1
                     continue
-            
+
             if explain and base_features:
                 try:
                     other_features = get_game_features(self.conn, gid)
-                    
+
                     # Apply excluded feature values if provided (remove from consideration)
                     if excluded_feature_values:
                         for feature_type, excluded_values in excluded_feature_values.items():
@@ -357,12 +362,9 @@ class SimilarityEngine:
                                 # Remove excluded values from other_features
                                 if isinstance(other_features[feature_type], set):
                                     other_features[feature_type] = other_features[feature_type] - excluded_values
-                    
+
                     meta_score, overlaps, scores = compute_meta_similarity(
-                        base_features,
-                        other_features,
-                        conn=self.conn,
-                        use_rarity_weighting=use_rarity_weighting
+                        base_features, other_features, conn=self.conn, use_rarity_weighting=use_rarity_weighting
                     )
 
                     # Check include/exclude features
@@ -370,22 +372,22 @@ class SimilarityEngine:
                         if not self._has_required_features(overlaps, include_features):
                             logger.debug(f"Game {gid} missing required features {include_features}")
                             continue
-                    
+
                     if exclude_features:
                         if self._has_excluded_features(overlaps, exclude_features):
                             logger.debug(f"Game {gid} has excluded features {exclude_features}")
                             continue
-                    
+
                     # Check player count constraints (before generic constraints)
                     if not self._satisfies_player_constraints(base_features, other_features, constraints):
                         logger.debug(f"Game {gid} doesn't satisfy player constraints")
                         continue
-                    
+
                     # Check playtime constraints
                     if not self._satisfies_playtime_constraints(gid, constraints):
                         logger.debug(f"Game {gid} doesn't satisfy playtime constraints")
                         continue
-                    
+
                     # apply generic constraints
                     if not self._satisfies_constraints(scores, overlaps, constraints):
                         continue
@@ -399,6 +401,32 @@ class SimilarityEngine:
                     # Restore game_id if it was overwritten
                     if "game_id" not in record or record.get("game_id") != saved_game_id:
                         record["game_id"] = saved_game_id
+
+                    # Calculate missing and extra features (like "Do I need X" feature)
+                    # Missing: features in base game but not in other game
+                    missing_mechanics = sorted(base_features.get("mechanics", set()) - other_features.get("mechanics", set()))
+                    missing_categories = sorted(
+                        base_features.get("categories", set()) - other_features.get("categories", set())
+                    )
+                    missing_designers = sorted(base_features.get("designers", set()) - other_features.get("designers", set()))
+                    missing_families = sorted(base_features.get("families", set()) - other_features.get("families", set()))
+
+                    # Extra: features in other game but not in base game
+                    extra_mechanics = sorted(other_features.get("mechanics", set()) - base_features.get("mechanics", set()))
+                    extra_categories = sorted(other_features.get("categories", set()) - base_features.get("categories", set()))
+                    extra_designers = sorted(other_features.get("designers", set()) - base_features.get("designers", set()))
+                    extra_families = sorted(other_features.get("families", set()) - base_features.get("families", set()))
+
+                    # Add missing and extra features to record
+                    record["missing_mechanics"] = missing_mechanics
+                    record["missing_categories"] = missing_categories
+                    record["missing_designers"] = missing_designers
+                    record["missing_families"] = missing_families
+                    record["extra_mechanics"] = extra_mechanics
+                    record["extra_categories"] = extra_categories
+                    record["extra_designers"] = extra_designers
+                    record["extra_families"] = extra_families
+
                     record["reason_summary"] = build_reason_summary(base_features, overlaps)
                 except Exception as e:
                     logger.warning(f"Error processing game {gid} in explain mode: {e}", exc_info=True)
@@ -420,26 +448,26 @@ class SimilarityEngine:
             results.append(record)
             # Don't break early - collect all 2n matches for reordering
 
-        
         # Reorder by weighted criteria: similarity score + num_ratings + rank + years since publish
         import time
+
         current_year = time.localtime().tm_year
-        
+
         def calculate_weighted_score(record):
             base_score = record.get("final_score", record.get("embedding_similarity", 0.0))
-            
+
             # Normalize and weight factors
             # num_ratings: log scale, max weight 0.1
             num_ratings = record.get("num_ratings", 0)
             ratings_weight = 0.1 * min(1.0, (num_ratings / 10000.0) if num_ratings > 0 else 0)
-            
+
             # rank: better rank (lower number) = higher score, max weight 0.1
             rank = record.get("rank")
             rank_weight = 0.0
             if rank is not None and rank > 0:
                 # Normalize: rank 1 = 1.0, rank 10000 = 0.0
                 rank_weight = 0.1 * max(0.0, 1.0 - (rank / 10000.0))
-            
+
             # years since publish: newer games get slight boost, max weight 0.05
             year = record.get("year_published")
             year_weight = 0.0
@@ -447,9 +475,9 @@ class SimilarityEngine:
                 years_ago = current_year - year
                 # Games from last 5 years get full boost, older games get less
                 year_weight = 0.05 * max(0.0, 1.0 - (years_ago / 20.0))
-            
+
             return base_score + ratings_weight + rank_weight + year_weight
-        
+
         # Sort by weighted score
         try:
             results.sort(key=calculate_weighted_score, reverse=True)
@@ -457,7 +485,7 @@ class SimilarityEngine:
             logger.error(f"Error sorting results: {e}", exc_info=True)
             # Fallback: sort by embedding similarity
             results.sort(key=lambda r: r.get("embedding_similarity", 0.0), reverse=True)
-        
+
         # Return top_k after reordering
         return results[:top_k]
 
@@ -471,17 +499,17 @@ class SimilarityEngine:
         player_constraints = constraints.get("players", {})
         if not player_constraints:
             return True
-        
+
         base_min = base_features.get("min_players")
         base_max = base_features.get("max_players")
         base_recommended = base_features.get("recommended_players", set())
         base_best = base_features.get("best_player_count")
-        
+
         other_min = other_features.get("min_players")
         other_max = other_features.get("max_players")
         other_recommended = other_features.get("recommended_players", set())
         other_best = other_features.get("best_player_count")
-        
+
         # Check exact player count
         exact_players = player_constraints.get("exact")
         use_recommended = player_constraints.get("use_recommended", False)
@@ -508,7 +536,7 @@ class SimilarityEngine:
             elif not other_recommended:
                 # No recommended players and no min/max, can't verify
                 return False
-        
+
         # Check player count range overlap
         min_overlap = player_constraints.get("min_overlap")
         if min_overlap is not None:
@@ -522,13 +550,13 @@ class SimilarityEngine:
                 overlap = len(base_recommended & other_recommended)
                 if overlap < min_overlap:
                     return False
-        
+
         # Check similar best player count
         similar_best = player_constraints.get("similar_best")
         if similar_best and base_best is not None and other_best is not None:
             if abs(base_best - other_best) > 1:  # Allow 1 player difference
                 return False
-        
+
         return True
 
     def _satisfies_playtime_constraints(
@@ -540,28 +568,26 @@ class SimilarityEngine:
         playtime_constraints = constraints.get("playtime", {})
         if not playtime_constraints:
             return True
-        
+
         target_playtime = playtime_constraints.get("target")
         tolerance = playtime_constraints.get("tolerance", 0.3)
-        
+
         if target_playtime is None:
             return True
-        
+
         try:
             # Fetch playing_time from database
             cur = execute_query(
-                self.conn,
-                "SELECT playing_time, min_playtime, max_playtime FROM games WHERE id = ?",
-                (game_id,)
+                self.conn, "SELECT playing_time, min_playtime, max_playtime FROM games WHERE id = %s", (game_id,)
             )
             row = cur.fetchone()
             if not row:
                 return True
-            
+
             playing_time = int(row[0]) if row[0] is not None else None
             min_playing_time = int(row[1]) if row[1] is not None else None
             max_playing_time = int(row[2]) if row[2] is not None else None
-            
+
             # Use playing_time if available, otherwise use min/max average
             if playing_time is not None:
                 actual_time = playing_time
@@ -574,14 +600,14 @@ class SimilarityEngine:
             else:
                 # No playtime data available, allow it
                 return True
-            
+
             # Check if actual_time is within tolerance of target
             tolerance_range = target_playtime * tolerance
             min_time = target_playtime - tolerance_range
             max_time = target_playtime + tolerance_range
-            
+
             return min_time <= actual_time <= max_time
-        except (sqlite3.Error, ValueError, TypeError) as e:
+        except (psycopg2.Error, ValueError, TypeError) as e:
             logger.warning(f"Error checking playtime constraints for game {game_id}: {e}")
             # On error, allow the game through (don't filter it out)
             return True
@@ -607,7 +633,7 @@ class SimilarityEngine:
         # }
 
         for facet, cfg in constraints.items():
-            j_key = f"j_{facet}"          # e.g. 'j_mechanics'
+            j_key = f"j_{facet}"  # e.g. 'j_mechanics'
             shared_key = f"shared_{facet}"  # e.g. 'shared_mechanics'
 
             j_val = scores.get(j_key)
@@ -628,7 +654,7 @@ class SimilarityEngine:
                 return False
 
         return True
-    
+
     def _has_required_features(self, overlaps: Dict[str, Any], include_features: List[str]) -> bool:
         """Check if game has at least one feature from each required type."""
         for feature_type in include_features:
@@ -636,7 +662,7 @@ class SimilarityEngine:
             if shared_key not in overlaps or len(overlaps[shared_key]) == 0:
                 return False
         return True
-    
+
     def _has_excluded_features(self, overlaps: Dict[str, Any], exclude_features: List[str]) -> bool:
         """Check if game has any features from excluded types (strict exclusion)."""
         for feature_type in exclude_features:
@@ -645,4 +671,3 @@ class SimilarityEngine:
                 logger.debug(f"Game excluded due to {feature_type} overlap: {overlaps[shared_key]}")
                 return True
         return False
-

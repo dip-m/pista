@@ -8,7 +8,7 @@
 export function getAnonymousUserId() {
   // Check if we already have an ID stored
   let anonymousId = localStorage.getItem('anonymous_user_id');
-  
+
   if (!anonymousId) {
     // Generate a new ID based on browser characteristics
     const fingerprint = [
@@ -22,7 +22,7 @@ export function getAnonymousUserId() {
       navigator.hardwareConcurrency || 0,
       navigator.deviceMemory || 0,
     ].join('|');
-    
+
     // Simple hash function
     let hash = 0;
     for (let i = 0; i < fingerprint.length; i++) {
@@ -30,11 +30,11 @@ export function getAnonymousUserId() {
       hash = ((hash << 5) - hash) + char;
       hash = hash & hash; // Convert to 32-bit integer
     }
-    
+
     anonymousId = `anon_${Math.abs(hash)}`;
     localStorage.setItem('anonymous_user_id', anonymousId);
   }
-  
+
   return anonymousId;
 }
 
@@ -73,4 +73,3 @@ export function getRemainingMessages(limit = 5) {
   const count = getTodayMessageCount();
   return Math.max(0, limit - count);
 }
-

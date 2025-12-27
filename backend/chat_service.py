@@ -1,12 +1,30 @@
 # api/chat_service.py
+# NOTE: This is a stub/example file. The actual chat implementation is in backend/main.py
+import json
+import faiss
 from fastapi import FastAPI, Depends
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List, Set
 
 from backend.similarity_engine import SimilarityEngine
+from backend.chat_nlu import interpret_message
+from backend.main import load_user_collection, compare_two_games
 from .db import db_connection, ensure_schema
 
+
+# Stub functions for reply rendering (actual implementation is in main.py)
+def render_recommendation_reply(query_spec: Dict[str, Any], results: List[Dict[str, Any]]) -> str:
+    """Render a recommendation reply from query spec and results."""
+    return "Here are some similar games you might enjoy."
+
+
+def render_comparison_reply(comparison: Dict[str, Any]) -> str:
+    """Render a comparison reply from comparison results."""
+    return "Here's a comparison of the two games."
+
+
 app = FastAPI()
+
 
 # You'd probably manage this via dependency injection / startup events.
 def get_engine() -> SimilarityEngine:
@@ -17,15 +35,18 @@ def get_engine() -> SimilarityEngine:
         id_map = json.load(f)
     return SimilarityEngine(conn, index, id_map)
 
+
 class ChatRequest(BaseModel):
     user_id: str
     message: str
     context: Optional[Dict[str, Any]] = None
 
+
 class ChatResponse(BaseModel):
     reply_text: str
     results: Optional[List[Dict[str, Any]]] = None
     query_spec: Optional[Dict[str, Any]] = None
+
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, engine: SimilarityEngine = Depends(get_engine)):
@@ -49,7 +70,9 @@ def chat(req: ChatRequest, engine: SimilarityEngine = Depends(get_engine)):
 
     elif query_spec["intent"] == "compare_pair":
         # Call your compare_games logic
-        comparison = compare_two_games(engine, query_spec)  # wrapper you already have
+        game_a_id = query_spec.get("game_a_id")
+        game_b_id = query_spec.get("game_b_id")
+        comparison = compare_two_games(engine, game_a_id, game_b_id)
         results = [comparison]
         reply = render_comparison_reply(comparison)
 
@@ -62,4 +85,3 @@ def chat(req: ChatRequest, engine: SimilarityEngine = Depends(get_engine)):
         results=results,
         query_spec=query_spec,
     )
-

@@ -7,11 +7,11 @@ import GameFeaturesEditor from "./GameFeaturesEditor";
 
 function AdminGames({ user }) {
   const navigate = useNavigate();
-  
+
   const handleClose = useCallback(() => {
     navigate("/");
   }, [navigate]);
-  
+
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -29,11 +29,11 @@ function AdminGames({ user }) {
       if (searchQuery) {
         params.append("search", searchQuery);
       }
-      
+
       const res = await fetch(`${API_BASE}/admin/games?${params}`, {
         headers: authService.getAuthHeaders(),
       });
-      
+
       if (res.ok) {
         const data = await res.json();
         setGames(data.games);
@@ -65,7 +65,7 @@ function AdminGames({ user }) {
           <h2>Admin: All Games</h2>
           <button className="close-button" onClick={handleClose}>×</button>
         </div>
-        
+
         <div className="admin-games-search">
           <input
             type="text"
@@ -75,7 +75,7 @@ function AdminGames({ user }) {
             className="admin-search-input"
           />
         </div>
-        
+
         {loading ? (
           <div className="loading">Loading games...</div>
         ) : (
@@ -103,7 +103,7 @@ function AdminGames({ user }) {
                 </div>
               ))}
             </div>
-            
+
             <div className="admin-games-pagination">
               <button
                 onClick={() => setPage(p => Math.max(1, p - 1))}
@@ -122,7 +122,7 @@ function AdminGames({ user }) {
           </>
         )}
       </div>
-      
+
       {selectedGame && (
         <GameFeaturesEditor
           gameId={selectedGame.id}
@@ -135,5 +135,3 @@ function AdminGames({ user }) {
 }
 
 export default AdminGames;
-
-

@@ -77,7 +77,7 @@ try {
         "--reload",
         "--reload-dir", "backend"
     )
-    
+
     # Execute uvicorn with array splatting to avoid wildcard expansion
     & uvicorn @uvicornArgs
 } catch {
@@ -87,4 +87,3 @@ try {
     Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Yellow
     throw
 }
-

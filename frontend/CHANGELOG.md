@@ -93,4 +93,3 @@ frontend/
 - The app is now ready for both web and Android deployment
 - Pagination improves performance for large collections
 - Smaller tiles allow more games to be displayed at once
-

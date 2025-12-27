@@ -3,7 +3,7 @@ tqdm
 sentence-transformers
 numpy
 faiss-cpu
-fastapi 
+fastapi
 uvicorn[standard]
 PyJWT
 python-multipart
@@ -15,4 +15,3 @@ openai
 replicate
 psycopg2-binary
 authlib
-

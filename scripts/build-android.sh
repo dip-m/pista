@@ -33,4 +33,3 @@ echo "To build signed APK for Play Store:"
 echo "1. Open Android Studio: npx cap open android"
 echo "2. Build > Generate Signed Bundle / APK"
 echo "3. Select Android App Bundle (AAB) for Play Store"
-

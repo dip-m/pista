@@ -244,4 +244,3 @@ function ScoringPad({ game, onClose }) {
 }
 
 export default ScoringPad;
-

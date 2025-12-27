@@ -108,4 +108,3 @@ For Google Play Store:
 - Clear build cache: `npm run build -- --no-cache`
 - For Android: Clean project in Android Studio (Build > Clean Project)
 - Check that API URL is accessible from Android device/emulator
-

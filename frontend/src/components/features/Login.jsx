@@ -14,7 +14,7 @@ function Login({ onLogin }) {
   const [loading, setLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState(null);
   const [rememberMe, setRememberMe] = useState(false);
-  
+
   // Microsoft MSAL hook
   const { instance } = useMsal();
 
@@ -57,7 +57,7 @@ function Login({ onLogin }) {
         const userInfo = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
           headers: { Authorization: `Bearer ${tokenResponse.access_token}` }
         }).then(res => res.json());
-        
+
         // Send to backend
         const result = await authService.oauthCallback(
           'google',
@@ -89,12 +89,12 @@ function Login({ onLogin }) {
         scopes: ['User.Read'],
         account: instance.getActiveAccount()
       });
-      
+
       // Get user info from Microsoft Graph
       const userInfo = await fetch('https://graph.microsoft.com/v1.0/me', {
         headers: { Authorization: `Bearer ${response.accessToken}` }
       }).then(res => res.json());
-      
+
       const result = await authService.oauthCallback(
         'microsoft',
         response.accessToken,
@@ -137,7 +137,7 @@ function Login({ onLogin }) {
     <div className="login-container">
       <div className="login-box">
         <h2>{isRegister ? "Register" : "Login"}</h2>
-        
+
         {/* OAuth Buttons */}
         <div className="oauth-buttons" style={{ marginBottom: "20px" }}>
           {googleClientId && (
@@ -262,4 +262,3 @@ function Login({ onLogin }) {
 }
 
 export default Login;
-

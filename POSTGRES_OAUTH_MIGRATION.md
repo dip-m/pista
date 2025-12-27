@@ -233,4 +233,3 @@ If issues occur:
 2. Switch `DB_TYPE=sqlite` in environment
 3. Update `DATABASE_URL` to point back to SQLite file path
 4. Restart service
-
