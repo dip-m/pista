@@ -11,49 +11,108 @@ import FeedbackAdmin from "./components/features/FeedbackAdmin";
 import ABTestAdmin from "./components/features/ABTestAdmin";
 import PWAInstallPrompt from "./components/common/PWAInstallPrompt";
 import { authService } from "./services/auth";
+import { debugLog, debugError } from "./utils/debugLog";
 import "./styles/index.css";
 import "./styles/dark-mode.css";
 
 function App() {
+  // #region agent log
+  debugLog('App.jsx:19','App component initializing',{hasWindow:typeof window!=='undefined',hasDocument:typeof document!=='undefined'},'A');
+  // #endregion
+
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [darkMode, setDarkMode] = useState(() => {
-    // Check localStorage or system preference
-    const saved = localStorage.getItem("darkMode");
-    if (saved !== null) return saved === "true";
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    // #region agent log
+    debugLog('App.jsx:27','Before localStorage access in darkMode init',{hasLocalStorage:typeof localStorage!=='undefined'},'D');
+    // #endregion
+    try {
+      // Check localStorage or system preference
+      const saved = localStorage.getItem("darkMode");
+      // #region agent log
+      debugLog('App.jsx:31','localStorage.getItem completed',{saved:saved!==null?saved:'null'},'D');
+      // #endregion
+      if (saved !== null) return saved === "true";
+      // #region agent log
+      const matchMediaResult = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      debugLog('App.jsx:35','matchMedia check completed',{matches:matchMediaResult},'D');
+      // #endregion
+      return matchMediaResult;
+    } catch(e) {
+      // #region agent log
+      debugError('App.jsx:34','localStorage/matchMedia error in darkMode init',e,'D');
+      // #endregion
+      return false; // Default to light mode on error
+    }
   });
 
   useEffect(() => {
-    // Apply dark mode theme
-    document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
-    localStorage.setItem("darkMode", darkMode.toString());
+    // #region agent log
+    debugLog('App.jsx:53','darkMode useEffect executing',{darkMode},'D');
+    // #endregion
+    try {
+      // Apply dark mode theme
+      document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
+      localStorage.setItem("darkMode", darkMode.toString());
+      // #region agent log
+      debugLog('App.jsx:59','darkMode localStorage.setItem completed',{success:true},'D');
+      // #endregion
+    } catch(e) {
+      // #region agent log
+      debugError('App.jsx:48','darkMode useEffect error',e,'D');
+      // #endregion
+    }
   }, [darkMode]);
 
   useEffect(() => {
+    // #region agent log
+    debugLog('App.jsx:73','checkAuth useEffect starting',{},'A');
+    // #endregion
     checkAuth();
   }, []);
 
   const checkAuth = async () => {
-    const token = authService.getToken();
-    if (token) {
-      // Check if token is expired
-      if (authService.isTokenExpired && authService.isTokenExpired()) {
-        authService.logout();
-      } else {
-        try {
-          const userData = await authService.getCurrentUser();
-          if (userData) {
-            setUser(userData);
-          } else {
+    // #region agent log
+    debugLog('App.jsx:80','checkAuth function entry',{},'A');
+    // #endregion
+    try {
+      const token = authService.getToken();
+      // #region agent log
+      debugLog('App.jsx:85','Token retrieved',{hasToken:!!token},'A');
+      // #endregion
+      if (token) {
+        // Check if token is expired
+        if (authService.isTokenExpired && authService.isTokenExpired()) {
+          authService.logout();
+        } else {
+          try {
+            const userData = await authService.getCurrentUser();
+            // #region agent log
+            debugLog('App.jsx:95','getCurrentUser completed',{hasUserData:!!userData},'A');
+            // #endregion
+            if (userData) {
+              setUser(userData);
+            } else {
+              authService.logout();
+            }
+          } catch (err) {
+            // #region agent log
+            debugError('App.jsx:78','getCurrentUser error',err,'E');
+            // #endregion
             authService.logout();
           }
-        } catch (err) {
-          authService.logout();
         }
       }
+      setLoading(false);
+      // #region agent log
+      debugLog('App.jsx:112','checkAuth completed successfully',{loading:false},'A');
+      // #endregion
+    } catch(err) {
+      // #region agent log
+      debugError('App.jsx:87','checkAuth exception',err,'A');
+      // #endregion
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleLogin = async (isNewUser = false) => {
@@ -81,12 +140,16 @@ function App() {
   }
 
   const googleClientId = process.env.REACT_APP_GOOGLE_CLIENT_ID || '';
+  // #region agent log
+  debugLog('App.jsx:143','Before render - checking env vars and providers',{googleClientId:googleClientId||'empty',hasMsalInstance:!!msalInstance},'C');
+  // #endregion
 
   // Always render GoogleOAuthProvider (required for useGoogleLogin hook)
   // Use placeholder if no client ID is configured - button will be hidden in Login component
-  return (
-    <GoogleOAuthProvider clientId={googleClientId || 'placeholder-for-hook-compatibility'}>
-      <MsalProvider instance={msalInstance}>
+  try {
+    return (
+      <GoogleOAuthProvider clientId={googleClientId || 'placeholder-for-hook-compatibility'}>
+        <MsalProvider instance={msalInstance}>
         <Router>
           <div className="App">
         <nav className="app-nav">
@@ -210,7 +273,13 @@ function App() {
         </Router>
       </MsalProvider>
     </GoogleOAuthProvider>
-  );
+    );
+  } catch(e) {
+    // #region agent log
+    debugError('App.jsx:213','Render exception',e,'A');
+    // #endregion
+    return <div>Error loading app: {e.message}</div>;
+  }
 }
 
 export default App;

@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
+import { httpRequest } from "../../utils/httpClient";
 
 function Profile({ user, onUserUpdate }) {
   const [collection, setCollection] = useState([]);
@@ -20,7 +21,8 @@ function Profile({ user, onUserUpdate }) {
   const loadCollection = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/profile/collection?sort_by=${sortBy}&order=${sortOrder}`, {
+      const res = await httpRequest(`${API_BASE}/profile/collection?sort_by=${sortBy}&order=${sortOrder}`, {
+        method: "GET",
         headers: authService.getAuthHeaders(),
       });
       if (res.ok) {
@@ -53,7 +55,7 @@ function Profile({ user, onUserUpdate }) {
 
     setSearchLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/games/search?q=${encodeURIComponent(query)}&limit=10`);
+      const res = await httpRequest(`${API_BASE}/games/search?q=${encodeURIComponent(query)}&limit=10`, { method: "GET" });
       if (res.ok) {
         const data = await res.json();
         setSearchResults(data);
@@ -84,7 +86,7 @@ function Profile({ user, onUserUpdate }) {
 
   const addToCollection = async (gameId) => {
     try {
-      const res = await fetch(`${API_BASE}/profile/collection`, {
+      const res = await httpRequest(`${API_BASE}/profile/collection`, {
         method: "POST",
         headers: {
           ...authService.getAuthHeaders(),
@@ -108,7 +110,7 @@ function Profile({ user, onUserUpdate }) {
 
   const removeFromCollection = async (gameId) => {
     try {
-      const res = await fetch(`${API_BASE}/profile/collection/${gameId}`, {
+      const res = await httpRequest(`${API_BASE}/profile/collection/${gameId}`, {
         method: "DELETE",
         headers: authService.getAuthHeaders(),
       });
@@ -155,7 +157,7 @@ function Profile({ user, onUserUpdate }) {
                   }
 
                   try {
-                    const res = await fetch(`${API_BASE}/profile/username`, {
+                    const res = await httpRequest(`${API_BASE}/profile/username`, {
                       method: "PUT",
                       headers: {
                         ...authService.getAuthHeaders(),
@@ -205,7 +207,7 @@ function Profile({ user, onUserUpdate }) {
                   }
 
                   try {
-                    const res = await fetch(`${API_BASE}/profile/bgg-id`, {
+                    const res = await httpRequest(`${API_BASE}/profile/bgg-id`, {
                       method: "PUT",
                       headers: {
                         ...authService.getAuthHeaders(),
@@ -244,7 +246,7 @@ function Profile({ user, onUserUpdate }) {
                     return;
                   }
                   try {
-                    const res = await fetch(`${API_BASE}/profile/collection/import-bgg`, {
+                    const res = await httpRequest(`${API_BASE}/profile/collection/import-bgg`, {
                       method: "POST",
                       headers: authService.getAuthHeaders(),
                     });

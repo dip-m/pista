@@ -3,10 +3,6 @@
   "appName": "Pista",
   "webDir": "build",
   "bundledWebRuntime": false,
-  "server": {
-    "url": "",
-    "cleartext": true
-  },
   "android": {
     "allowMixedContent": true,
     "buildOptions": {

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link } from "react-router-dom";
 import { authService } from "../../services/auth";
 import { API_BASE } from "../../config/api";
+import { httpRequest } from "../../utils/httpClient";
 import Marketplace from "./Marketplace";
 import GameFeaturesEditor from "./GameFeaturesEditor";
 import ScoringPad from "./ScoringPad";
@@ -74,7 +75,7 @@ function PistaChat({ user }) {
   const loadChatHistory = useCallback(async () => {
     setLoadingHistory(true);
     try {
-      const res = await fetch(`${API_BASE}/chat/history`, {
+      const res = await httpRequest(`${API_BASE}/chat/history`, {
         headers: authService.getAuthHeaders(),
       });
       if (res.ok) {
@@ -97,7 +98,8 @@ function PistaChat({ user }) {
 
   const loadHelpfulQuestion = async () => {
     try {
-      const res = await fetch(`${API_BASE}/feedback/questions/helpful`, {
+      const res = await httpRequest(`${API_BASE}/feedback/questions/helpful`, {
+        method: "GET",
         headers: authService.getAuthHeaders(),
       });
       if (res.ok) {
@@ -130,7 +132,7 @@ function PistaChat({ user }) {
     searchDebounceTimerRef.current = setTimeout(async () => {
       try {
         // Increase limit to 20 for better results
-        const res = await fetch(`${API_BASE}/games/search?q=${encodeURIComponent(trimmedQuery)}&limit=20`);
+        const res = await httpRequest(`${API_BASE}/games/search?q=${encodeURIComponent(trimmedQuery)}&limit=20`, { method: "GET" });
         if (res.ok) {
           const data = await res.json();
           // Handle both old format (array) and new format (object with games/features)
@@ -474,7 +476,7 @@ function PistaChat({ user }) {
 
   const loadThread = async (threadIdToLoad) => {
     try {
-      const res = await fetch(`${API_BASE}/chat/history/${threadIdToLoad}`, {
+      const res = await httpRequest(`${API_BASE}/chat/history/${threadIdToLoad}`, {
         headers: authService.getAuthHeaders(),
       });
       if (res.ok) {
@@ -553,7 +555,7 @@ function PistaChat({ user }) {
 
     // Submit feedback
     try {
-      const res = await fetch(`${API_BASE}/feedback/respond`, {
+      const res = await httpRequest(`${API_BASE}/feedback/respond`, {
         method: "POST",
         headers: {
           ...authService.getAuthHeaders(),
@@ -606,7 +608,7 @@ function PistaChat({ user }) {
 
     // Submit feedback with optional additional details
     try {
-      const res = await fetch(`${API_BASE}/feedback/respond`, {
+      const res = await httpRequest(`${API_BASE}/feedback/respond`, {
         method: "POST",
         headers: {
           ...authService.getAuthHeaders(),
@@ -719,7 +721,7 @@ function PistaChat({ user }) {
         requestBody
       });
 
-      const res = await fetch(`${API_BASE}/feedback/respond`, {
+      const res = await httpRequest(`${API_BASE}/feedback/respond`, {
         method: "POST",
         headers: {
           ...authService.getAuthHeaders(),
@@ -742,7 +744,7 @@ function PistaChat({ user }) {
     }
   };
 
-  const handleRequireFeature = (messageIndex, featureType, featureValue, autoRequery = true) => {
+  const handleRequireFeature = async (messageIndex, featureType, featureValue, autoRequery = true) => {
     setRequiredFeatures((prev) => {
       const newRequired = { ...prev };
       if (!newRequired[messageIndex]) {
@@ -753,34 +755,41 @@ function PistaChat({ user }) {
       }
       // Add the feature to required set
       newRequired[messageIndex][featureType].add(featureValue);
+      return newRequired;
+    });
 
-      // Update active required features for display
-      setActiveRequiredFeatures((prev) => {
-        const key = `${featureType}:${featureValue}`;
-        if (!prev.find(f => f.key === key)) {
-          return [...prev, { type: featureType, value: featureValue, key, messageIndex }];
+    // Update active required features for display
+    setActiveRequiredFeatures((prev) => {
+      const key = `${featureType}:${featureValue}`;
+      if (!prev.find(f => f.key === key)) {
+        return [...prev, { type: featureType, value: featureValue, key, messageIndex }];
+      }
+      return prev;
+    });
+
+    // Re-query with required feature (only if autoRequery is true)
+    if (!autoRequery) {
+      return;
+    }
+
+    const message = messages[messageIndex];
+    if (message && message.querySpec) {
+      // Find the original user message that triggered this response
+      // Look backwards from the assistant message to find the user message
+      let originalUserMessage = null;
+      for (let i = messageIndex - 1; i >= 0; i--) {
+        if (messages[i].role === "user") {
+          originalUserMessage = messages[i].text;
+          break;
         }
-        return prev;
-      });
-
-      // Re-query with required feature (only if autoRequery is true)
-      if (!autoRequery) {
-        return;
       }
 
-      const message = messages[messageIndex];
-      if (message && message.querySpec) {
-        // Find the original user message that triggered this response
-        // Look backwards from the assistant message to find the user message
-        let originalUserMessage = null;
-        for (let i = messageIndex - 1; i >= 0; i--) {
-          if (messages[i].role === "user") {
-            originalUserMessage = messages[i].text;
-            break;
-          }
-        }
+      if (originalUserMessage) {
+        // Get current required features - use functional update to get latest state
+        let requiredArray = {};
+        setRequiredFeatures((prev) => {
+          const newRequired = prev;
 
-        if (originalUserMessage) {
           // Build required feature values object - aggregate ALL required features from ALL messages
           const required = {};
           Object.keys(newRequired).forEach(msgIdx => {
@@ -793,12 +802,15 @@ function PistaChat({ user }) {
           });
 
           // Convert Sets to Arrays
-          const requiredArray = {};
           Object.keys(required).forEach(ft => {
             requiredArray[ft] = Array.from(required[ft]);
           });
 
-          // Re-send the query with required features in context
+          return newRequired; // Return unchanged state
+        });
+
+        // Re-send the query with required features in context (async operation outside setState)
+        try {
           const context = {
             last_game_id: gameChips.length > 0 ? gameChips[0].id : null,
             useCollection: useCollection,
@@ -816,16 +828,17 @@ function PistaChat({ user }) {
             selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
           };
 
-          fetch(`${API_BASE}/chat`, {
+          const res = await httpRequest(`${API_BASE}/chat`, {
             method: "POST",
             headers: {
               ...authService.getAuthHeaders(),
               "Content-Type": "application/json",
             },
             body: JSON.stringify(requestBody),
-          })
-          .then(res => res.json())
-          .then(data => {
+          });
+          const data = await res.json();
+          // Process response data
+          if (data) {
 
             // Build user message text showing the context
             let userMessageText = originalUserMessage;
@@ -937,16 +950,13 @@ function PistaChat({ user }) {
 
               return updated;
             });
-          })
-          .catch(err => {
-            console.error("Failed to re-query:", err);
-            alert("Failed to update results. Please try again.");
-          });
+          }
+        } catch (err) {
+          console.error("Failed to re-query:", err);
+          alert("Failed to update results. Please try again.");
         }
       }
-
-      return newRequired;
-    });
+    }
   };
 
   const removeRequiredFeature = (key) => {
@@ -1042,7 +1052,7 @@ function PistaChat({ user }) {
     setProcessingTimeout(timeoutId);
 
     try {
-      const res = await fetch(`${API_BASE}/chat`, {
+      const res = await httpRequest(`${API_BASE}/chat`, {
         method: "POST",
         headers: {
           ...authService.getAuthHeaders(),
@@ -1133,7 +1143,8 @@ function PistaChat({ user }) {
       // Request feedback question after response and attach to message
       if (user) {
         try {
-          const feedbackRes = await fetch(`${API_BASE}/feedback/questions/random`, {
+          const feedbackRes = await httpRequest(`${API_BASE}/feedback/questions/random`, {
+            method: "GET",
             headers: authService.getAuthHeaders(),
           });
           if (feedbackRes.ok) {
@@ -1759,7 +1770,7 @@ function PistaChat({ user }) {
 
                     // Show fake-door message immediately (no file upload needed)
                     try {
-                      const res = await fetch(`${API_BASE}/image/generate`, {
+                      const res = await httpRequest(`${API_BASE}/image/generate`, {
                         method: "POST",
                         headers: {
                           ...authService.getAuthHeaders(),
@@ -1819,7 +1830,7 @@ function PistaChat({ user }) {
                     }
 
                     try {
-                      const res = await fetch(`${API_BASE}/rules/explain`, {
+                      const res = await httpRequest(`${API_BASE}/rules/explain`, {
                         method: "POST",
                         headers: {
                           ...authService.getAuthHeaders(),
@@ -1879,7 +1890,7 @@ function PistaChat({ user }) {
                     }
 
                     try {
-                      const res = await fetch(`${API_BASE}/scoring/pad`, {
+                      const res = await httpRequest(`${API_BASE}/scoring/pad`, {
                         method: "POST",
                         headers: {
                           ...authService.getAuthHeaders(),

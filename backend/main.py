@@ -74,12 +74,14 @@ except ImportError:
     ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,https://pistatabletop.netlify.app")
     ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()]
 
+# CORS Configuration - handle OPTIONS preflight requests
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],  # Allow all origins if not specified
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # Explicitly include OPTIONS
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -3871,6 +3873,12 @@ def toggle_feature_blacklist(rule_id: int, current_user: Optional[Dict[str, Any]
     except Exception as e:
         logger.error(f"Error toggling feature blacklist: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to toggle blacklist rule: {str(e)}")
+
+
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    """Handle OPTIONS preflight requests for CORS."""
+    return {"message": "OK"}
 
 
 @app.get("/health")
