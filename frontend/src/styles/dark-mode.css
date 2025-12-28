@@ -704,3 +704,116 @@
 [data-theme="dark"] .feature-search-item:hover {
   background: var(--bg-tertiary);
 }
+
+/* Filter Ribbon Dark Mode */
+[data-theme="dark"] .filter-ribbon {
+  background: var(--bg-secondary);
+  border-top-color: var(--border-color);
+}
+
+[data-theme="dark"] .filter-controls-compact {
+  background: transparent;
+}
+
+[data-theme="dark"] .filter-selector-group {
+  background: transparent;
+}
+
+[data-theme="dark"] .filter-label {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .filter-select {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .filter-select:focus {
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.3);
+}
+
+[data-theme="dark"] .filter-select option {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .filters-overlay-button {
+  background: #1976d2;
+  color: white;
+}
+
+[data-theme="dark"] .filters-overlay-button:hover {
+  background: #1565c0;
+}
+
+[data-theme="dark"] .filter-badge {
+  background: #f44336;
+  color: white;
+}
+
+[data-theme="dark"] .filter-chip {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .filter-chip.game-chip {
+  background: rgba(25, 118, 210, 0.2);
+  border-color: rgba(25, 118, 210, 0.4);
+  color: #90caf9;
+}
+
+[data-theme="dark"] .filter-chip-remove:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+[data-theme="dark"] .quick-filter-btn {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .quick-filter-btn:hover {
+  background: var(--bg-primary);
+  border-color: #1976d2;
+}
+
+[data-theme="dark"] .quick-filter-btn svg {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .filter-count {
+  background: #f44336;
+  color: white;
+}
+
+/* Message Limit Ribbon Dark Mode */
+[data-theme="dark"] .message-limit-error {
+  background-color: rgba(244, 67, 54, 0.15) !important;
+  border-color: rgba(244, 67, 54, 0.5) !important;
+  color: #ff6b6b !important;
+}
+
+[data-theme="dark"] .message-limit-error .message-limit-link {
+  color: #90caf9 !important;
+}
+
+[data-theme="dark"] .message-limit-error .message-limit-link:hover {
+  color: #64b5f6 !important;
+}
+
+[data-theme="dark"] .message-limit-info {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid var(--border-color) !important;
+}
+
+[data-theme="dark"] .message-limit-info .message-limit-link {
+  color: #90caf9 !important;
+}
+
+[data-theme="dark"] .message-limit-info .message-limit-link:hover {
+  color: #64b5f6 !important;
+}

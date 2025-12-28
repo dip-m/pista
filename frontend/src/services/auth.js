@@ -54,27 +54,12 @@ export const authService = {
     const requestHeaders = { "Content-Type": "application/json" };
     const requestBody = JSON.stringify({ email, password });
 
-    // #region agent log
-    console.log('[DEBUG] auth.js:login - Login request starting', {loginUrl,apiBase:API_BASE,urlLength:loginUrl.length,hasTrailingSlash:loginUrl.endsWith('/'),hasDoubleSlash:loginUrl.includes('//'),headers:requestHeaders,bodyLength:requestBody.length});
-    fetch('http://127.0.0.1:7245/ingest/abc48296-4794-49ce-a506-dc4b71ebc651',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login',message:'Login request starting',data:{loginUrl,apiBase:API_BASE,urlLength:loginUrl.length,hasTrailingSlash:loginUrl.endsWith('/'),hasDoubleSlash:loginUrl.includes('//'),headers:requestHeaders,bodyLength:requestBody.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
-
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7245/ingest/abc48296-4794-49ce-a506-dc4b71ebc651',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login',message:'Before httpRequest call',data:{loginUrl,method:'POST'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
-      // #endregion
-
       const res = await httpRequest(loginUrl, {
         method: "POST",
         headers: requestHeaders,
         body: requestBody,
       });
-
-      // #region agent log
-      const responseHeaders = res.headers instanceof Headers ? Object.fromEntries(res.headers.entries()) : res.headers || {};
-      console.log('[DEBUG] auth.js:login - HTTP response received', {status:res.status,statusText:res.statusText,ok:res.ok,headers:responseHeaders});
-      fetch('http://127.0.0.1:7245/ingest/abc48296-4794-49ce-a506-dc4b71ebc651',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login',message:'HTTP response received',data:{status:res.status,statusText:res.statusText,ok:res.ok,headers:responseHeaders},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
 
       if (!res.ok) {
         let errorData;
@@ -83,22 +68,12 @@ export const authService = {
         } catch (e) {
           errorData = { detail: `HTTP ${res.status}: ${res.statusText}` };
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7245/ingest/abc48296-4794-49ce-a506-dc4b71ebc651',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login',message:'Login failed - response not ok',data:{status:res.status,statusText:res.statusText,errorData},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         throw new Error(errorData.detail || "Login failed");
       }
       const data = await res.json();
       this.setToken(data.access_token, rememberMe);
-      // #region agent log
-      fetch('http://127.0.0.1:7245/ingest/abc48296-4794-49ce-a506-dc4b71ebc651',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login',message:'Login successful',data:{hasToken:!!data.access_token},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
       return data;
     } catch (err) {
-      // #region agent log
-      console.log('[DEBUG] auth.js:login - Login exception caught', {errorName:err.name,errorMessage:err.message,errorStack:err.stack,isNetworkError:err.message.includes('fetch'),isCorsError:err.message.includes('CORS')});
-      fetch('http://127.0.0.1:7245/ingest/abc48296-4794-49ce-a506-dc4b71ebc651',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'auth.js:login',message:'Login exception caught',data:{errorName:err.name,errorMessage:err.message,errorStack:err.stack,isNetworkError:err.message.includes('fetch'),isCorsError:err.message.includes('CORS')},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-      // #endregion
       throw err;
     }
   },

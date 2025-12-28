@@ -35,7 +35,8 @@
     "sync:android": "npx cap sync android",
     "sync:ios": "npx cap sync ios",
     "lint": "eslint src --ext .js,.jsx",
-    "lint:fix": "eslint src --ext .js,.jsx --fix"
+    "lint:fix": "eslint src --ext .js,.jsx --fix",
+    "serve": "npx serve -s build -l 3000"
   },
   "eslintConfig": {
     "extends": [

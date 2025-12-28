@@ -15,6 +15,12 @@ function Marketplace({ gameId, gameName, onClose }) {
   }, [gameId]);
 
   const fetchMarketplaceListings = async (gameId) => {
+    if (!gameId) {
+      setError("Invalid game ID");
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
@@ -25,11 +31,13 @@ function Marketplace({ gameId, gameName, onClose }) {
         const data = await res.json();
         setListings(data.listings || []);
       } else {
-        setError("Failed to fetch marketplace listings");
+        const errorText = await res.text().catch(() => "Unknown error");
+        console.error("Marketplace API error:", res.status, errorText);
+        setError(`Failed to fetch marketplace listings (${res.status})`);
       }
     } catch (err) {
       console.error("Marketplace fetch error:", err);
-      setError("Error loading marketplace data");
+      setError(`Error loading marketplace data: ${err.message || "Network error"}`);
     } finally {
       setLoading(false);
     }
@@ -57,10 +65,16 @@ function Marketplace({ gameId, gameName, onClose }) {
   };
 
   return (
-    <div className="marketplace-sidebar">
+    <div className="marketplace-sidebar" role="dialog" aria-modal="true" aria-labelledby="marketplace-title">
       <div className="marketplace-header">
-        <h3>Marketplace: {gameName}</h3>
-        <button onClick={onClose} className="marketplace-close">×</button>
+        <h3 id="marketplace-title">Marketplace: {gameName}</h3>
+        <button
+          onClick={onClose}
+          className="marketplace-close"
+          aria-label="Close marketplace"
+        >
+          ×
+        </button>
       </div>
       {loading ? (
         <div className="marketplace-loading">Loading listings...</div>
@@ -100,6 +114,7 @@ function Marketplace({ gameId, gameName, onClose }) {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="listing-link"
+                  aria-label={`View listing on ${listing.platform}`}
                 >
                   View Listing →
                 </a>

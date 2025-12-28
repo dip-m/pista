@@ -47,7 +47,10 @@ function PistaChat({ user }) {
   const [useCollection, setUseCollection] = useState(false);
   const [threadId, setThreadId] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
-  const [showHistory, setShowHistory] = useState(true);
+  const [showHistory, setShowHistory] = useState(false); // Start collapsed
+  const [showFiltersOverlay, setShowFiltersOverlay] = useState(false); // Overlay for text tiles
+  const [playerCount, setPlayerCount] = useState(null); // Single player count selector
+  const [playtime, setPlaytime] = useState(null); // Single playtime selector
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [gameSearchResults, setGameSearchResults] = useState([]);
   const [featureSearchResults, setFeatureSearchResults] = useState([]);
@@ -438,34 +441,47 @@ function PistaChat({ user }) {
     setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
   };
 
-  const addPlayerChip = (playerCount) => {
-    if (!playerChips.includes(playerCount)) {
-      setPlayerChips([...playerChips, playerCount]);
-      insertTextAtCursor(`${playerCount} players `);
+  // Handle player count selector
+  const handlePlayerCountChange = (value) => {
+    const numValue = value === '' ? null : parseInt(value);
+    setPlayerCount(numValue);
+
+    // Remove old player count from input
+    const oldInput = input.replace(/\b\d+\s*players?\b/gi, '').replace(/\s+/g, ' ').trim();
+
+    // Remove old player chips
+    setPlayerChips([]);
+
+    if (numValue) {
+      // Add new player count to input
+      setInput(oldInput + (oldInput ? ' ' : '') + `${numValue} players `);
+      setPlayerChips([numValue]);
+    } else {
+      setInput(oldInput);
     }
   };
 
-  const removePlayerChip = (playerCount) => {
-    setPlayerChips(playerChips.filter(p => p !== playerCount));
-    // Remove player count from input if present
-    const regex = new RegExp(`\\b${playerCount}\\s*players?\\b`, 'gi');
-    setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
-  };
+  // Handle playtime selector
+  const handlePlaytimeChange = (value) => {
+    const playtimeOption = PLAYTIME_OPTIONS.find(p => p.value.toString() === value);
+    setPlaytime(value === '' ? null : value);
 
-  const addPlaytimeChip = (playtime) => {
-    if (!playtimeChips.find(p => p.value === playtime.value)) {
-      setPlaytimeChips([...playtimeChips, playtime]);
-      insertTextAtCursor(`${playtime.label} `);
-    }
-  };
+    // Remove old playtime from input
+    let oldInput = input;
+    PLAYTIME_OPTIONS.forEach(opt => {
+      const regex = new RegExp(`\\b${opt.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+      oldInput = oldInput.replace(regex, '').replace(/\s+/g, ' ').trim();
+    });
 
-  const removePlaytimeChip = (playtimeValue) => {
-    const playtime = playtimeChips.find(p => p.value === playtimeValue);
-    if (playtime) {
-      setPlaytimeChips(playtimeChips.filter(p => p.value !== playtimeValue));
-      // Remove playtime from input if present
-      const regex = new RegExp(`\\b${playtime.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-      setInput(input.replace(regex, '').replace(/\s+/g, ' ').trim());
+    // Remove old playtime chips
+    setPlaytimeChips([]);
+
+    if (playtimeOption) {
+      // Add new playtime to input
+      setInput(oldInput + (oldInput ? ' ' : '') + `${playtimeOption.label} `);
+      setPlaytimeChips([playtimeOption]);
+    } else {
+      setInput(oldInput);
     }
   };
 
@@ -1299,32 +1315,63 @@ function PistaChat({ user }) {
         />
       )}
       {user && (
-        <div className={`chat-history-sidebar ${showHistory ? "visible" : ""}`}>
-          <div className="history-header">
-            <h3>Chat History</h3>
-            <button onClick={startNewChat} className="new-chat-button">
-              New Chat
-            </button>
-          </div>
-          {loadingHistory ? (
-            <div className="loading">Loading...</div>
-          ) : (
-            <div className="history-list">
-              {chatHistory.map((thread) => (
-                <div
-                  key={thread.id}
-                  className={`history-item ${thread.id === threadId ? "active" : ""}`}
-                  onClick={() => loadThread(thread.id)}
-                >
-                  <div className="history-title">{thread.title}</div>
-                  <div className="history-date">
-                    {new Date(thread.updated_at).toLocaleDateString()}
-                  </div>
-                </div>
-              ))}
-            </div>
+        <>
+          {showHistory && (
+            <div
+              className="history-backdrop"
+              onClick={() => setShowHistory(false)}
+              aria-label="Close history"
+            />
           )}
-        </div>
+          <div className={`chat-history-sidebar ${showHistory ? "visible" : ""}`}>
+            <div className="history-header">
+              <h3>Chat History</h3>
+              <button
+                onClick={startNewChat}
+                className="new-chat-button"
+                aria-label="Start new chat"
+              >
+                New Chat
+              </button>
+            </div>
+            {loadingHistory ? (
+              <div className="loading">Loading...</div>
+            ) : (
+              <div className="history-list">
+                {chatHistory.map((thread) => (
+                  <div
+                    key={thread.id}
+                    className={`history-item ${thread.id === threadId ? "active" : ""}`}
+                    onClick={() => {
+                      loadThread(thread.id);
+                      // Close history on mobile after selection
+                      if (window.innerWidth <= 768) {
+                        setShowHistory(false);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        loadThread(thread.id);
+                        if (window.innerWidth <= 768) {
+                          setShowHistory(false);
+                        }
+                      }
+                    }}
+                    aria-label={`Load chat: ${thread.title}`}
+                  >
+                    <div className="history-title">{thread.title}</div>
+                    <div className="history-date">
+                      {new Date(thread.updated_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {featuresEditorGame && (
@@ -1346,12 +1393,20 @@ function PistaChat({ user }) {
             <button
               className="toggle-history"
               onClick={() => setShowHistory(!showHistory)}
+              aria-label={showHistory ? "Hide chat history" : "Show chat history"}
+              aria-expanded={showHistory}
             >
               {showHistory ? "◀" : "▶"} History
             </button>
           </div>
         )}
-        <div className="chat-window">
+        <div
+          className="chat-window"
+          role="log"
+          aria-live="polite"
+          aria-label="Chat messages"
+          tabIndex={0}
+        >
           <MessageList
             messages={messages}
             user={user}
@@ -1389,147 +1444,123 @@ function PistaChat({ user }) {
           />
         </div>
 
-        <div className="filter-bar">
-          {chips.map((chip) => (
-            <div className="chip" key={chip.facet}>
-              {chip.facet}
+        {/* Filters Overlay */}
+        {showFiltersOverlay && (
+          <div className="filters-overlay" role="dialog" aria-modal="true" aria-labelledby="filters-overlay-title">
+            <div className="filters-overlay-content">
+              <div className="filters-overlay-header">
+                <h3 id="filters-overlay-title">Filters & Options</h3>
+                <button
+                  onClick={() => setShowFiltersOverlay(false)}
+                  className="filters-overlay-close"
+                  aria-label="Close filters overlay"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="filters-overlay-body">
+                {/* Active chips display */}
+                <div className="active-chips-section">
+                  <h4>Active Filters:</h4>
+                  <div className="active-chips">
+                    {chips.map((chip) => (
+                      <div className="chip" key={chip.facet}>
+                        {chip.facet}
+                      </div>
+                    ))}
+                    {promptChips.map((prompt) => (
+                      <div className="chip prompt-chip" key={prompt}>
+                        {prompt}
+                        <button
+                          onClick={() => removePromptChip(prompt)}
+                          className="chip-remove"
+                          title="Remove prompt"
+                          aria-label={`Remove ${prompt} filter`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    {gameChips.map((game) => (
+                      <div className="chip game-chip" key={game.id}>
+                        <span
+                          onClick={() => handleGameChipClick(game)}
+                          style={{ cursor: "pointer", flex: 1 }}
+                          title="Click to add to input"
+                        >
+                          🎮 {game.name}
+                        </span>
+                        <button
+                          onClick={() => removeGameChip(game.id)}
+                          className="chip-remove"
+                          title="Remove game"
+                          aria-label={`Remove ${game.name} filter`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    {doINeedChips.map((chip) => (
+                      <div className="chip game-chip" key={chip.id}>
+                        <span
+                          onClick={() => handleDoINeedChipClick(chip)}
+                          style={{ cursor: "pointer", flex: 1 }}
+                          title="Click to ask again"
+                        >
+                          ❓ Do I need {chip.name}?
+                        </span>
+                        <button
+                          onClick={() => removeDoINeedChip(chip.id)}
+                          className="chip-remove"
+                          title="Remove"
+                          aria-label={`Remove ${chip.name} filter`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Common prompts */}
+                <div className="common-prompts-section">
+                  <h4>Quick Prompts:</h4>
+                  <div className="common-prompts">
+                    {COMMON_PROMPTS.filter(p => !promptChips.includes(p)).map((prompt) => (
+                      <button
+                        key={prompt}
+                        className="chip prompt-button"
+                        onClick={() => {
+                          addPromptChip(prompt);
+                          setShowFiltersOverlay(false);
+                        }}
+                        title="Add prompt"
+                        aria-label={`Add ${prompt} prompt`}
+                      >
+                        + {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
-          ))}
-          {promptChips.map((prompt) => (
-            <div className="chip prompt-chip" key={prompt}>
-              {prompt}
-              <button
-                onClick={() => removePromptChip(prompt)}
-                className="chip-remove"
-                title="Remove prompt"
-              >
-                ×
-              </button>
-            </div>
-          ))}
-          {gameChips.map((game) => (
-            <div className="chip game-chip" key={game.id}>
-              <span
-                onClick={() => handleGameChipClick(game)}
-                style={{ cursor: "pointer", flex: 1 }}
-                title="Click to add to input"
-              >
-                🎮 {game.name}
-              </span>
-              <button
-                onClick={() => removeGameChip(game.id)}
-                className="chip-remove"
-                title="Remove game"
-              >
-                ×
-              </button>
-            </div>
-          ))}
-          {doINeedChips.map((chip) => (
-            <div className="chip game-chip" key={chip.id}>
-              <span
-                onClick={() => handleDoINeedChipClick(chip)}
-                style={{ cursor: "pointer", flex: 1 }}
-                title="Click to ask again"
-              >
-                ❓ Do I need {chip.name}?
-              </span>
-              <button
-                onClick={() => removeDoINeedChip(chip.id)}
-                className="chip-remove"
-                title="Remove"
-              >
-                ×
-              </button>
-            </div>
-          ))}
-          {playerChips.map((playerCount) => (
-            <div className="chip player-chip" key={playerCount}>
-              👥 {playerCount} players
-              <button
-                onClick={() => removePlayerChip(playerCount)}
-                className="chip-remove"
-                title="Remove player count"
-              >
-                ×
-              </button>
-            </div>
-          ))}
-          <div className="chip toggle">
-            <label>
-              <input
-                type="checkbox"
-                checked={useCollection}
-                onChange={(e) => setUseCollection(e.target.checked)}
-              />
-              In my collection
-            </label>
+            <div className="filters-overlay-backdrop" onClick={() => setShowFiltersOverlay(false)} aria-label="Close overlay"></div>
           </div>
-          <div className="common-prompts">
-            {COMMON_PROMPTS.filter(p => !promptChips.includes(p)).map((prompt) => (
-              <button
-                key={prompt}
-                className="chip prompt-button"
-                onClick={() => addPromptChip(prompt)}
-                title="Add prompt"
-              >
-                + {prompt}
-              </button>
-            ))}
-          </div>
-          <div className="player-counts">
-            {playerChips.length === 0 && PLAYER_COUNTS.map((count) => (
-              <button
-                key={count}
-                className="chip player-button"
-                onClick={() => addPlayerChip(count)}
-                title="Add player count"
-              >
-                + {count} players
-              </button>
-            ))}
-          </div>
-          <div className="playtime-options">
-            {playtimeChips.length === 0 && PLAYTIME_OPTIONS.map((playtime) => (
-              <button
-                key={playtime.value}
-                className="chip playtime-button"
-                onClick={() => addPlaytimeChip(playtime)}
-                title="Add playtime"
-              >
-                + {playtime.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        )}
 
         <div className="chat-input-container" style={{ position: "relative" }}>
           {/* Message limit warning for anonymous users */}
           {!user && messageLimitError && (
-            <div className="message-limit-error" style={{
-              padding: "0.75rem",
-              marginBottom: "0.5rem",
-              backgroundColor: "#ffebee",
-              border: "1px solid #f44336",
-              borderRadius: "4px",
-              color: "#c62828"
-            }}>
+            <div className="message-limit-error">
               {messageLimitError}
-              <Link to="/login" style={{ marginLeft: "0.5rem", color: "#1976d2", textDecoration: "underline" }}>
+              <Link to="/login" className="message-limit-link">
                 Log in to continue
               </Link>
             </div>
           )}
           {!user && !messageLimitError && (
-            <div style={{
-              padding: "0.5rem",
-              marginBottom: "0.5rem",
-              fontSize: "0.85rem",
-              color: "#666",
-              backgroundColor: "#f5f5f5",
-              borderRadius: "4px"
-            }}>
-              {getRemainingMessages(5)} messages remaining today. <Link to="/login" style={{ color: "#1976d2", textDecoration: "underline" }}>Log in</Link> for unlimited messages.
+            <div className="message-limit-info">
+              {getRemainingMessages(5)} messages remaining today. <Link to="/login" className="message-limit-link">Log in</Link> for unlimited messages.
             </div>
           )}
           {/* Processing indicator - only show after 5 seconds */}
@@ -1641,320 +1672,357 @@ function PistaChat({ user }) {
               )}
             </div>
           )}
-          <div className="chat-input-row">
-            {/* Display context chips above input */}
-            {(gameChips.length > 0 || promptChips.length > 0 || playerChips.length > 0 || playtimeChips.length > 0) && (
-              <div className="context-chips-display" style={{ marginBottom: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
-                {gameChips.map((game) => (
-                  <div className="chip game-chip" key={game.id}>
-                    <span
-                      onClick={() => handleGameChipClick(game)}
-                      style={{ cursor: "pointer", flex: 1 }}
-                      title="Click to add to input"
-                    >
-                      🎮 {game.name}
-                    </span>
-                    <button
-                      onClick={() => removeGameChip(game.id)}
-                      className="chip-remove"
-                      title="Remove game"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-                {promptChips.map((prompt) => (
-                  <div className="chip prompt-chip" key={prompt}>
-                    {prompt}
-                    <button
-                      onClick={() => removePromptChip(prompt)}
-                      className="chip-remove"
-                      title="Remove prompt"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-                {playerChips.map((playerCount) => (
-                  <div className="chip player-chip" key={playerCount}>
-                    👥 {playerCount} players
-                    <button
-                      onClick={() => removePlayerChip(playerCount)}
-                      className="chip-remove"
-                      title="Remove player count"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-                {playtimeChips.map((playtime) => (
-                  <div className="chip playtime-chip" key={playtime.value}>
-                    ⏱️ {playtime.label}
-                    <button
-                      onClick={() => removePlaytimeChip(playtime.value)}
-                      className="chip-remove"
-                      title="Remove playtime"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div style={{ position: "relative", display: "flex", flexDirection: "column" }}>
+          <div className="chat-input-wrapper">
               {activeRequiredFeatures.length > 0 && (
-                <div style={{ marginBottom: "0.5rem", padding: "0.5rem", backgroundColor: "var(--bg-secondary, #f5f5f5)", borderRadius: "4px", fontSize: "0.9rem", minHeight: "2rem", border: "1px solid var(--border-color, #ddd)", display: "flex", alignItems: "center", flexWrap: "wrap", gap: "0.25rem" }}>
-                  <span style={{ fontWeight: "bold", marginRight: "0.5rem" }}>Required features:</span>
-                  <span style={{ display: "inline" }}>
-                    {activeRequiredFeatures.map((feature, idx) => (
-                      <span key={feature.key} style={{ display: "inline" }}>
-                        {idx > 0 && <span style={{ margin: "0 0.25rem" }}>, </span>}
-                        <span
-                          style={{ color: "#1976d2", cursor: "pointer", textDecoration: "underline" }}
-                          onClick={() => removeRequiredFeature(feature.key)}
-                          title="Click to remove"
-                        >
-                          {feature.type === "mechanics" && "⚙️ "}
-                          {feature.type === "categories" && "🏷️ "}
-                          {feature.type === "designers" && "👤 "}
-                          {feature.type === "families" && "👨‍👩‍👧‍👦 "}
-                          {feature.value}
-                        </span>
-                      </span>
+                <div className="required-features-bar">
+                  <span className="required-features-label">Required features:</span>
+                  <div className="required-features-list">
+                    {activeRequiredFeatures.map((feature) => (
+                      <button
+                        key={feature.key}
+                        className="required-feature-tag"
+                        onClick={() => removeRequiredFeature(feature.key)}
+                        title="Click to remove"
+                        aria-label={`Remove ${feature.value} requirement`}
+                      >
+                        {feature.type === "mechanics" && "⚙️ "}
+                        {feature.type === "categories" && "🏷️ "}
+                        {feature.type === "designers" && "👤 "}
+                        {feature.type === "families" && "👨‍👩‍👧‍👦 "}
+                        {feature.value}
+                        <span className="remove-icon">×</span>
+                      </button>
                     ))}
-                  </span>
+                  </div>
                 </div>
               )}
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", width: "100%" }}>
-                <input
-                  ref={setInputRef}
-                  value={input}
-                  onChange={handleInputChange}
-                  onSelect={(e) => {
-                    setCursorPosition(e.target.selectionStart || 0);
-                  }}
-                  onClick={(e) => {
-                    setCursorPosition(e.target.selectionStart || 0);
-                  }}
-                  onKeyUp={(e) => {
-                    setCursorPosition(e.target.selectionStart || 0);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !atMentionActive && !isProcessing) {
-                      sendMessage();
-                    } else if (e.key === "Escape") {
-                      setAtMentionActive(false);
-                      setShowGameSearch(false);
-                    }
-                  }}
-                  placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Type @ to search for games, mechanics, categories, designers, or publishers"}
-                  disabled={isProcessing}
-                  style={{ flex: 1 }}
-                />
-                {/* Image upload button - requires game selection first */}
-                <button
-                  onClick={async () => {
-                    // Check if game is selected
-                    const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
-                    const currentContext = input.trim() || null;
 
-                    if (!lastGameId) {
-                      // Prompt user to select a game first
-                      alert("Please select a game first using @ mention in the search box");
-                      // Focus on input to help user
-                      if (inputRef) {
-                        inputRef.focus();
+              <div className="chat-input-box">
+                <div className="chat-input-inner">
+                  <input
+                    ref={setInputRef}
+                    value={input}
+                    onChange={handleInputChange}
+                    onSelect={(e) => {
+                      setCursorPosition(e.target.selectionStart || 0);
+                    }}
+                    onClick={(e) => {
+                      setCursorPosition(e.target.selectionStart || 0);
+                    }}
+                    onKeyUp={(e) => {
+                      setCursorPosition(e.target.selectionStart || 0);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey && !atMentionActive && !isProcessing) {
+                        e.preventDefault();
+                        sendMessage();
+                      } else if (e.key === "Escape") {
+                        setAtMentionActive(false);
+                        setShowGameSearch(false);
                       }
-                      return;
-                    }
+                    }}
+                    placeholder={gameChips.length > 0 ? `Ask about games similar to ${gameChips[0].name}...` : "Type @ to search for games, mechanics, categories, designers, or publishers"}
+                    disabled={isProcessing}
+                    className="chat-input-field"
+                    aria-label="Chat input"
+                    aria-describedby="chat-input-help"
+                    autoComplete="off"
+                    spellCheck="true"
+                  />
+                  <span id="chat-input-help" className="sr-only">
+                    Type your message here. Use @ to search for games and features. Press Enter to send.
+                  </span>
 
-                    // Show fake-door message immediately (no file upload needed)
-                    try {
-                      const res = await httpRequest(`${API_BASE}/image/generate`, {
-                        method: "POST",
-                        headers: {
-                          ...authService.getAuthHeaders(),
-                          "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({
-                          game_id: lastGameId,
-                          context: currentContext,
-                        }),
-                      });
+                  <div className="chat-input-actions">
+                    <button
+                      onClick={async () => {
+                        const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
+                        const currentContext = input.trim() || null;
 
-                      if (res.ok) {
-                        const data = await res.json();
-                        const fakeMsg = {
-                          role: "assistant",
-                          text: data.message,
-                          messageId: Date.now(),
-                          isFakeDoor: true, // Flag to hide like/dislike buttons
-                        };
-                        setMessages((prev) => [...prev, fakeMsg]);
-                      } else {
-                        alert("Failed to process request");
-                      }
-                    } catch (err) {
-                      console.error("Image upload fake-door failed:", err);
-                      alert("Failed to process request");
-                    }
-                  }}
-                  style={{
-                    padding: "0.5rem",
-                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed",
-                    border: "1px solid #ddd",
-                    borderRadius: "4px",
-                    backgroundColor: gameChips.length > 0 ? "var(--bg-secondary, #f5f5f5)" : "var(--bg-disabled, #e0e0e0)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    minWidth: "40px",
-                    height: "40px",
-                    opacity: gameChips.length > 0 ? 1 : 0.5
-                  }}
-                  title={gameChips.length > 0 ? "Upload image (coming soon)" : "Select a game first using @ mention"}
-                  disabled={gameChips.length === 0}
-                >
-                  📷
-                </button>
-                {/* Rules explainer button */}
-                <button
-                  onClick={async () => {
-                    // Get current game context
-                    const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
-                    const currentContext = input.trim() || null;
+                        if (!lastGameId) {
+                          alert("Please select a game first using @ mention in the search box");
+                          if (inputRef) {
+                            inputRef.focus();
+                          }
+                          return;
+                        }
 
-                    if (!lastGameId) {
-                      alert("Please select a game first to explain its rules");
-                      return;
-                    }
+                        try {
+                          const res = await httpRequest(`${API_BASE}/image/generate`, {
+                            method: "POST",
+                            headers: {
+                              ...authService.getAuthHeaders(),
+                              "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify({
+                              game_id: lastGameId,
+                              context: currentContext,
+                            }),
+                          });
 
-                    try {
-                      const res = await httpRequest(`${API_BASE}/rules/explain`, {
-                        method: "POST",
-                        headers: {
-                          ...authService.getAuthHeaders(),
-                          "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({
-                          game_id: lastGameId,
-                          context: currentContext,
-                        }),
-                      });
+                          if (res.ok) {
+                            const data = await res.json();
+                            const fakeMsg = {
+                              role: "assistant",
+                              text: data.message,
+                              messageId: Date.now(),
+                              isFakeDoor: true,
+                            };
+                            setMessages((prev) => [...prev, fakeMsg]);
+                          } else {
+                            alert("Failed to process request");
+                          }
+                        } catch (err) {
+                          console.error("Image upload fake-door failed:", err);
+                          alert("Failed to process request");
+                        }
+                      }}
+                      className={`chat-action-btn ${gameChips.length > 0 ? 'enabled' : 'disabled'}`}
+                      title={gameChips.length > 0 ? "Upload image (coming soon)" : "Select a game first using @ mention"}
+                      disabled={gameChips.length === 0}
+                      aria-label="Upload image"
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                        <circle cx="8.5" cy="8.5" r="1.5"/>
+                        <polyline points="21 15 16 10 5 21"/>
+                      </svg>
+                    </button>
 
-                      if (res.ok) {
-                        const data = await res.json();
-                        const fakeMsg = {
-                          role: "assistant",
-                          text: data.message,
-                          messageId: Date.now(),
-                          isFakeDoor: true, // Flag to hide like/dislike buttons
-                        };
-                        setMessages((prev) => [...prev, fakeMsg]);
-                      } else {
-                        alert("Failed to request rules explanation");
-                      }
-                    } catch (err) {
-                      console.error("Rules explainer failed:", err);
-                      alert("Failed to request rules explanation");
-                    }
-                  }}
-                  style={{
-                    padding: "0.5rem",
-                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed",
-                    border: "1px solid #ddd",
-                    borderRadius: "4px",
-                    backgroundColor: gameChips.length > 0 ? "var(--bg-secondary, #f5f5f5)" : "var(--bg-disabled, #e0e0e0)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    minWidth: "40px",
-                    height: "40px",
-                    opacity: gameChips.length > 0 ? 1 : 0.5
-                  }}
-                  title={gameChips.length > 0 ? "Explain rules (coming soon)" : "Select a game first"}
-                  disabled={gameChips.length === 0}
-                >
-                  📖
-                </button>
-                {/* Scoring pad button */}
-                <button
-                  onClick={async () => {
-                    // Get current game context
-                    const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
-                    const currentContext = input.trim() || null;
+                    <button
+                      onClick={async () => {
+                        const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
+                        const currentContext = input.trim() || null;
 
-                    if (!lastGameId) {
-                      alert("Please select a game first to open scoring pad");
-                      return;
-                    }
+                        if (!lastGameId) {
+                          alert("Please select a game first to explain its rules");
+                          return;
+                        }
 
-                    try {
-                      const res = await httpRequest(`${API_BASE}/scoring/pad`, {
-                        method: "POST",
-                        headers: {
-                          ...authService.getAuthHeaders(),
-                          "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({
-                          game_id: lastGameId,
-                          context: currentContext,
-                        }),
-                      });
+                        try {
+                          const res = await httpRequest(`${API_BASE}/rules/explain`, {
+                            method: "POST",
+                            headers: {
+                              ...authService.getAuthHeaders(),
+                              "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify({
+                              game_id: lastGameId,
+                              context: currentContext,
+                            }),
+                          });
 
-                      const data = await res.json();
+                          if (res.ok) {
+                            const data = await res.json();
+                            const fakeMsg = {
+                              role: "assistant",
+                              text: data.message,
+                              messageId: Date.now(),
+                              isFakeDoor: true,
+                            };
+                            setMessages((prev) => [...prev, fakeMsg]);
+                          } else {
+                            alert("Failed to request rules explanation");
+                          }
+                        } catch (err) {
+                          console.error("Rules explainer failed:", err);
+                          alert("Failed to request rules explanation");
+                        }
+                      }}
+                      className={`chat-action-btn ${gameChips.length > 0 ? 'enabled' : 'disabled'}`}
+                      title={gameChips.length > 0 ? "Explain game rules" : "Select a game first using @ mention"}
+                      disabled={gameChips.length === 0}
+                      aria-label="Explain game rules"
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                      </svg>
+                    </button>
 
-                      if (data.success && data.fake_door) {
-                        // Show fake-door message
-                        alert(data.message);
-                      } else if (data.exists && data.mechanism) {
-                        // Open scoring pad component
-                        setScoringPadGame({ id: lastGameId, name: gameChips[0].name, mechanism: data.mechanism });
-                      } else {
-                        alert("Scoring mechanism not available for this game yet.");
-                      }
-                    } catch (err) {
-                      console.error("Scoring pad failed:", err);
-                      alert("Failed to open scoring pad");
-                    }
-                  }}
-                  style={{
-                    padding: "0.5rem",
-                    cursor: gameChips.length > 0 ? "pointer" : "not-allowed",
-                    border: "1px solid #ddd",
-                    borderRadius: "4px",
-                    backgroundColor: gameChips.length > 0 ? "var(--bg-secondary, #f5f5f5)" : "var(--bg-disabled, #e0e0e0)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    minWidth: "40px",
-                    height: "40px",
-                    opacity: gameChips.length > 0 ? 1 : 0.5
-                  }}
-                  title={gameChips.length > 0 ? "End-game scoring pad" : "Select a game first using @ mention"}
-                  disabled={gameChips.length === 0}
-                >
-                  📊
-                </button>
+                    <button
+                      onClick={async () => {
+                        const lastGameId = gameChips.length > 0 ? gameChips[0].id : null;
+                        const currentContext = input.trim() || null;
+
+                        if (!lastGameId) {
+                          alert("Please select a game first to open scoring pad");
+                          return;
+                        }
+
+                        try {
+                          const res = await httpRequest(`${API_BASE}/scoring/pad`, {
+                            method: "POST",
+                            headers: {
+                              ...authService.getAuthHeaders(),
+                              "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify({
+                              game_id: lastGameId,
+                              context: currentContext,
+                            }),
+                          });
+
+                          const data = await res.json();
+
+                          if (data.success && data.fake_door) {
+                            alert(data.message);
+                          } else if (data.exists && data.mechanism) {
+                            setScoringPadGame({ id: lastGameId, name: gameChips[0].name, mechanism: data.mechanism });
+                          } else {
+                            alert("Scoring mechanism not available for this game yet.");
+                          }
+                        } catch (err) {
+                          console.error("Scoring pad failed:", err);
+                          alert("Failed to open scoring pad");
+                        }
+                      }}
+                      className={`chat-action-btn ${gameChips.length > 0 ? 'enabled' : 'disabled'}`}
+                      title={gameChips.length > 0 ? "End-game scoring pad" : "Select a game first using @ mention"}
+                      disabled={gameChips.length === 0}
+                      aria-label="Open scoring pad"
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                      </svg>
+                    </button>
+
+                    <button
+                      onClick={sendMessage}
+                      disabled={isProcessing || (!input.trim() && activeRequiredFeatures.length === 0)}
+                      className={`chat-send-btn ${(isProcessing || input.trim() || activeRequiredFeatures.length > 0) ? 'enabled' : 'disabled'}`}
+                      title={isProcessing ? "Processing request..." : "Send message"}
+                      aria-label="Send message"
+                    >
+                      {isProcessing ? (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <circle cx="12" cy="12" r="10"/>
+                          <path d="M12 6v6l4 2"/>
+                        </svg>
+                      ) : (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="22" y1="2" x2="11" y2="13"/>
+                          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-            <button
-              onClick={sendMessage}
-              disabled={isProcessing || (!input.trim() && activeRequiredFeatures.length === 0)}
-              title={isProcessing ? "Processing request..." : "Send message"}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                minWidth: "40px",
-                padding: "0.5rem"
-              }}
-            >
-              {isProcessing ? "⏸️" : "📤"}
-            </button>
+
+              {/* Filter ribbon below input */}
+              <div className="filter-ribbon">
+                  <div className="filter-ribbon-content">
+                    {/* Filter controls */}
+                    <div className="filter-controls-compact">
+                      <div className="filter-selector-group">
+                        <label htmlFor="player-count-select" className="filter-label">👥 Players:</label>
+                        <select
+                          id="player-count-select"
+                          value={playerCount || ''}
+                          onChange={(e) => handlePlayerCountChange(e.target.value)}
+                          className="filter-select"
+                          aria-label="Select number of players"
+                        >
+                          <option value="">Any</option>
+                          {PLAYER_COUNTS.map((count) => (
+                            <option key={count} value={count}>
+                              {count} {count === 1 ? 'player' : 'players'}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="filter-selector-group">
+                        <label htmlFor="playtime-select" className="filter-label">⏱️ Playtime:</label>
+                        <select
+                          id="playtime-select"
+                          value={playtime || ''}
+                          onChange={(e) => handlePlaytimeChange(e.target.value)}
+                          className="filter-select"
+                          aria-label="Select playtime"
+                        >
+                          <option value="">Any</option>
+                          {PLAYTIME_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="chip toggle">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={useCollection}
+                            onChange={(e) => setUseCollection(e.target.checked)}
+                            aria-label="Filter to games in my collection"
+                          />
+                          In my collection
+                        </label>
+                      </div>
+                      <button
+                        className="filters-overlay-button"
+                        onClick={() => setShowFiltersOverlay(true)}
+                        aria-label="Open filters and options"
+                        title="Filters & Options"
+                      >
+                        ⚙️ Filters
+                        {(promptChips.length > 0 || gameChips.length > 0 || doINeedChips.length > 0 || chips.length > 0) && (
+                          <span className="filter-badge">{promptChips.length + gameChips.length + doINeedChips.length + chips.length}</span>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Active filters */}
+                    {(promptChips.length > 0 || gameChips.length > 0 || doINeedChips.length > 0 || chips.length > 0) && (
+                      <div className="active-filters">
+                        {chips.map((chip) => (
+                          <span key={chip.facet} className="filter-chip">{chip.facet}</span>
+                        ))}
+                        {promptChips.map((prompt) => (
+                          <span key={prompt} className="filter-chip">
+                            {prompt}
+                            <button
+                              onClick={() => removePromptChip(prompt)}
+                              className="filter-chip-remove"
+                              aria-label={`Remove ${prompt} filter`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                        {gameChips.map((game) => (
+                          <span key={game.id} className="filter-chip game-chip">
+                            🎮 {game.name}
+                            <button
+                              onClick={() => removeGameChip(game.id)}
+                              className="filter-chip-remove"
+                              aria-label={`Remove ${game.name} filter`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                        {doINeedChips.map((chip) => (
+                          <span key={chip.id} className="filter-chip">
+                            ❓ Do I need {chip.name}?
+                            <button
+                              onClick={() => removeDoINeedChip(chip.id)}
+                              className="filter-chip-remove"
+                              aria-label={`Remove ${chip.name} filter`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
           </div>
         </div>
-      </div>
 
       {/* Feedback Question Modal */}
     </div>
