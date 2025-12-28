@@ -2092,3 +2092,128 @@ mark {
   padding: 0 2px;
   border-radius: 2px;
 }
+
+/* PWA Install Prompt Styles */
+.pwa-install-prompt {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  padding: 1rem 1.5rem;
+  max-width: 90%;
+  width: 400px;
+  z-index: 10000;
+  animation: slideUp 0.3s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateX(-50%) translateY(100px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+  }
+}
+
+.pwa-install-content {
+  text-align: center;
+}
+
+.pwa-install-content h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.2rem;
+  color: #333;
+}
+
+.pwa-install-content p {
+  margin: 0 0 1rem 0;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.pwa-install-buttons {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+}
+
+.pwa-install-btn {
+  background: #1976d2;
+  color: white;
+  border: none;
+  padding: 0.6rem 1.5rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.pwa-install-btn:hover {
+  background: #1565c0;
+}
+
+.pwa-dismiss-btn {
+  background: transparent;
+  color: #666;
+  border: 1px solid #ddd;
+  padding: 0.6rem 1.5rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.pwa-dismiss-btn:hover {
+  background: #f5f5f5;
+}
+
+.pwa-install-prompt.ios-prompt {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+}
+
+.pwa-install-prompt.ios-prompt .pwa-install-content p {
+  color: #495057;
+}
+
+.ios-icon {
+  font-size: 1.2rem;
+  vertical-align: middle;
+}
+
+/* PWA Safe Area for iOS notch */
+@supports (padding: max(0px)) {
+  .pwa-install-prompt {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+}
+
+/* Dark mode support for PWA prompt */
+[data-theme="dark"] .pwa-install-prompt {
+  background: #2d2d2d;
+  color: #fff;
+}
+
+[data-theme="dark"] .pwa-install-content h3 {
+  color: #fff;
+}
+
+[data-theme="dark"] .pwa-install-content p {
+  color: #ccc;
+}
+
+[data-theme="dark"] .pwa-dismiss-btn {
+  background: #3d3d3d;
+  color: #ccc;
+  border-color: #555;
+}
+
+[data-theme="dark"] .pwa-dismiss-btn:hover {
+  background: #4d4d4d;
+}

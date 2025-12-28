@@ -9,6 +9,7 @@ import Login from "./components/features/Login";
 import AdminGames from "./components/features/AdminGames";
 import FeedbackAdmin from "./components/features/FeedbackAdmin";
 import ABTestAdmin from "./components/features/ABTestAdmin";
+import PWAInstallPrompt from "./components/common/PWAInstallPrompt";
 import { authService } from "./services/auth";
 import "./styles/index.css";
 import "./styles/dark-mode.css";
@@ -104,8 +105,8 @@ function App() {
                     <Link to="/admin/ab-test">A/B Tests</Link>
                   </>
                 )}
-                <button 
-                  onClick={() => setDarkMode(!darkMode)} 
+                <button
+                  onClick={() => setDarkMode(!darkMode)}
                   className="theme-toggle"
                   title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
                 >
@@ -117,8 +118,8 @@ function App() {
               </>
             ) : (
               <>
-                <button 
-                  onClick={() => setDarkMode(!darkMode)} 
+                <button
+                  onClick={() => setDarkMode(!darkMode)}
                   className="theme-toggle"
                   title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
                 >
@@ -204,6 +205,7 @@ function App() {
           />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        <PWAInstallPrompt />
           </div>
         </Router>
       </MsalProvider>

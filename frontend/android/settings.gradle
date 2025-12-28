@@ -1,2 +1,5 @@
 rootProject.name = 'Pista'
 include ':app'
+
+// Capacitor settings (auto-generated)
+apply from: 'capacitor.settings.gradle'
