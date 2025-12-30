@@ -62,6 +62,7 @@ function PistaChat({ user }) {
   const [atMentionPosition, setAtMentionPosition] = useState(0);
   const [atMentionQuery, setAtMentionQuery] = useState("");
   const searchDebounceTimerRef = useRef(null);
+  const gameSearchDropdownRef = useRef(null);
   const [marketplaceGame, setMarketplaceGame] = useState(null);
   const [featuresEditorGame, setFeaturesEditorGame] = useState(null);
   const [scoringPadGame, setScoringPadGame] = useState(null);
@@ -78,12 +79,20 @@ function PistaChat({ user }) {
   const [showWelcomeMessage, setShowWelcomeMessage] = useState(true); // Show welcome message on first visit
   // eslint-disable-next-line no-unused-vars
   const [userJourneyState, setUserJourneyState] = useState(null); // Track user journey: 'game_in_mind', 'exploring', 'theme_preference', 'mechanics_preference'
+  const [showMobileFilters, setShowMobileFilters] = useState(false); // Show/hide mobile filters section
 
   // Note: requiredFeatures state is managed via setRequiredFeatures in handleRequireFeature and removeRequiredFeature
 
   // Debug: Log state changes for game search
   useEffect(() => {
   }, [atMentionActive, showGameSearch, gameSearchResults.length, featureSearchResults.length]);
+
+  // Scroll search dropdown to top when it opens on mobile
+  useEffect(() => {
+    if (showGameSearch && gameSearchDropdownRef.current) {
+      gameSearchDropdownRef.current.scrollTop = 0;
+    }
+  }, [showGameSearch, gameSearchResults.length, featureSearchResults.length]);
 
   // Auto-format search text when chips or flags change
   // Only format if there are other chips/flags besides just a game (to allow game detail view)
@@ -2245,7 +2254,7 @@ function PistaChat({ user }) {
 
                 {/* Search dropdown for @ mentions - shows both games and features */}
                 {atMentionActive && showGameSearch && (gameSearchResults.length > 0 || featureSearchResults.length > 0) && (
-                  <div className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000, maxHeight: "400px", overflowY: "auto" }}>
+                  <div ref={gameSearchDropdownRef} className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000, maxHeight: "400px", overflowY: "auto", overflowX: "hidden", WebkitOverflowScrolling: "touch" }}>
                     {/* Games section - shown first */}
                     {gameSearchResults.length > 0 && (
                       <>
@@ -2352,50 +2361,66 @@ function PistaChat({ user }) {
                   <div className="filter-ribbon-content">
                     {/* Filter controls */}
                     <div className="filter-controls-compact">
-                      <div className="filter-selector-group">
-                        <label htmlFor="player-count-select" className="filter-label">👥 Players:</label>
-                        <select
-                          id="player-count-select"
-                          value={playerCount || ''}
-                          onChange={(e) => handlePlayerCountChange(e.target.value)}
-                          className="filter-select"
-                          aria-label="Select number of players"
-                        >
-                          <option value="">Any</option>
-                          {PLAYER_COUNTS.map((count) => (
-                            <option key={count} value={count}>
-                              {count} {count === 1 ? 'player' : 'players'}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="filter-selector-group">
-                        <label htmlFor="playtime-select" className="filter-label">⏱️ Playtime:</label>
-                        <select
-                          id="playtime-select"
-                          value={playtime || ''}
-                          onChange={(e) => handlePlaytimeChange(e.target.value)}
-                          className="filter-select"
-                          aria-label="Select playtime"
-                        >
-                          <option value="">Any</option>
-                          {PLAYTIME_OPTIONS.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="chip toggle">
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={useCollection}
-                            onChange={(e) => setUseCollection(e.target.checked)}
-                            aria-label="Filter to games in my collection"
-                          />
-                          In my collection
-                        </label>
+                      {/* Mobile: Collapsible filters button */}
+                      <button
+                        className="mobile-filters-toggle"
+                        onClick={() => setShowMobileFilters(!showMobileFilters)}
+                        aria-label="Toggle filters"
+                        aria-expanded={showMobileFilters}
+                      >
+                        {showMobileFilters ? '−' : '+'} filters
+                        {(playerCount || playtime || useCollection) && (
+                          <span className="filter-badge">{(playerCount ? 1 : 0) + (playtime ? 1 : 0) + (useCollection ? 1 : 0)}</span>
+                        )}
+                      </button>
+
+                      {/* Mobile filters section - collapsible */}
+                      <div className={`mobile-filters-section ${showMobileFilters ? 'expanded' : ''}`}>
+                        <div className="filter-selector-group">
+                          <label htmlFor="player-count-select" className="filter-label">👥 Players:</label>
+                          <select
+                            id="player-count-select"
+                            value={playerCount || ''}
+                            onChange={(e) => handlePlayerCountChange(e.target.value)}
+                            className="filter-select"
+                            aria-label="Select number of players"
+                          >
+                            <option value="">Any</option>
+                            {PLAYER_COUNTS.map((count) => (
+                              <option key={count} value={count}>
+                                {count} {count === 1 ? 'player' : 'players'}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="filter-selector-group">
+                          <label htmlFor="playtime-select" className="filter-label">⏱️ Playtime:</label>
+                          <select
+                            id="playtime-select"
+                            value={playtime || ''}
+                            onChange={(e) => handlePlaytimeChange(e.target.value)}
+                            className="filter-select"
+                            aria-label="Select playtime"
+                          >
+                            <option value="">Any</option>
+                            {PLAYTIME_OPTIONS.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="chip toggle">
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={useCollection}
+                              onChange={(e) => setUseCollection(e.target.checked)}
+                              aria-label="Filter to games in my collection"
+                            />
+                            In my collection
+                          </label>
+                        </div>
                       </div>
                       {gameChips.length > 0 && excludedFamilies.length > 0 && (
                         <div className="chip toggle">

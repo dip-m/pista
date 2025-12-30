@@ -331,6 +331,45 @@ body {
     top: auto;
     margin-bottom: 0.5rem;
     margin-top: 0;
+    overflow-y: scroll;
+    -webkit-overflow-scrolling: touch;
+    transform: translateZ(0); /* Force hardware acceleration for smooth scrolling */
+  }
+
+  /* Mobile filters toggle - show on mobile */
+  .mobile-filters-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: #e5e7eb;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    width: 100%;
+    justify-content: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .mobile-filters-toggle:hover {
+    background: #d1d5db;
+  }
+
+  .mobile-filters-section {
+    display: none;
+    width: 100%;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+  }
+
+  .mobile-filters-section.expanded {
+    display: flex;
+  }
+
+  .mobile-filters-section .filter-selector-group {
+    width: 100%;
   }
 
   .game-card {
@@ -370,6 +409,20 @@ body {
   .filter-controls-compact {
     flex-direction: row;
     align-items: center;
+  }
+
+  /* Hide mobile filters toggle on desktop */
+  .mobile-filters-toggle {
+    display: none;
+  }
+
+  /* On desktop, always show mobile-filters-section (not collapsible) */
+  .mobile-filters-section {
+    display: flex !important;
+    flex-direction: row;
+    gap: 0.75rem;
+    padding: 0;
+    width: auto;
   }
 
   .filter-selector-group {
