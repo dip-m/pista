@@ -353,6 +353,86 @@
   color: var(--text-secondary);
 }
 
+[data-theme="dark"] .welcome-content h3 {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .welcome-content > p {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .welcome-option-btn {
+  background: var(--bg-secondary);
+  border-color: var(--border-color);
+}
+
+[data-theme="dark"] .welcome-option-btn:hover {
+  background: var(--bg-tertiary);
+  border-color: #1976d2;
+}
+
+[data-theme="dark"] .welcome-option-btn strong {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .welcome-option-btn p {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .game-detail-card {
+  background: var(--bg-secondary);
+  border-color: var(--border-color);
+}
+
+[data-theme="dark"] .game-detail-title {
+  color: #64b5f6;
+}
+
+[data-theme="dark"] .game-detail-meta {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .game-detail-description {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .show-more-btn {
+  color: #64b5f6;
+}
+
+[data-theme="dark"] .show-more-btn:hover {
+  color: #90caf9;
+}
+
+[data-theme="dark"] .game-detail-features h4 {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .feature-chip {
+  background: rgba(100, 181, 246, 0.2);
+  border-color: rgba(100, 181, 246, 0.4);
+  color: #90caf9;
+}
+
+[data-theme="dark"] .feature-chip:hover {
+  background: rgba(100, 181, 246, 0.3);
+  border-color: rgba(100, 181, 246, 0.6);
+}
+
+[data-theme="dark"] .no-features {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .show-more-features-btn {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .show-more-features-btn:hover {
+  background: var(--bg-secondary);
+}
+
 [data-theme="dark"] .history-header {
   background: var(--bg-tertiary);
   border-bottom-color: var(--border-color);
@@ -765,6 +845,12 @@
   color: #90caf9;
 }
 
+[data-theme="dark"] .filter-chip.exclude-chip {
+  background: rgba(244, 67, 54, 0.2);
+  border-color: rgba(244, 67, 54, 0.4);
+  color: #ff6b6b;
+}
+
 [data-theme="dark"] .filter-chip-remove:hover {
   background: rgba(255, 255, 255, 0.2);
 }
@@ -816,4 +902,40 @@
 
 [data-theme="dark"] .message-limit-info .message-limit-link:hover {
   color: #64b5f6 !important;
+}
+
+/* Load More Tile Dark Mode */
+[data-theme="dark"] .load-more-tile {
+  border-color: var(--border-color);
+  background: var(--bg-secondary);
+}
+
+[data-theme="dark"] .load-more-tile:hover {
+  border-color: #1976d2;
+  background: rgba(25, 118, 210, 0.1);
+}
+
+[data-theme="dark"] .load-more-tile button {
+  color: #90caf9;
+}
+
+/* Followup Prompt Dark Mode */
+[data-theme="dark"] .followup-prompt {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+}
+
+[data-theme="dark"] .followup-prompt-text {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] .followup-prompt-option {
+  background-color: rgba(25, 118, 210, 0.2);
+  border-color: rgba(25, 118, 210, 0.4);
+  color: #90caf9;
+}
+
+[data-theme="dark"] .followup-prompt-option:hover {
+  background-color: rgba(25, 118, 210, 0.3);
+  border-color: rgba(25, 118, 210, 0.6);
 }

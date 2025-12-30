@@ -9,6 +9,7 @@ import Login from "./components/features/Login";
 import AdminGames from "./components/features/AdminGames";
 import FeedbackAdmin from "./components/features/FeedbackAdmin";
 import ABTestAdmin from "./components/features/ABTestAdmin";
+import FeatureBlacklistAdmin from "./components/features/FeatureBlacklistAdmin";
 import PWAInstallPrompt from "./components/common/PWAInstallPrompt";
 import { authService } from "./services/auth";
 import "./styles/index.css";
@@ -116,6 +117,7 @@ function App() {
                     <Link to="/admin">Admin Games</Link>
                     <Link to="/admin/feedback">Admin Feedback</Link>
                     <Link to="/admin/ab-test">A/B Tests</Link>
+                    <Link to="/admin/feature-blacklist">Feature Blacklist</Link>
                   </>
                 )}
                 <button
@@ -211,6 +213,16 @@ function App() {
             element={
               user && user.is_admin ? (
                 <ABTestAdmin user={user} />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            }
+          />
+          <Route
+            path="/admin/feature-blacklist"
+            element={
+              user && user.is_admin ? (
+                <FeatureBlacklistAdmin user={user} />
               ) : (
                 <Navigate to="/" replace />
               )

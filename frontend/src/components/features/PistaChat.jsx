@@ -44,6 +44,9 @@ function PistaChat({ user }) {
   const [playerChips, setPlayerChips] = useState([]);
   const [playtimeChips, setPlaytimeChips] = useState([]);
   const [doINeedChips, setDoINeedChips] = useState([]); // [{id, name, game_id}, ...]
+  const [excludeSameSeries, setExcludeSameSeries] = useState(false); // Exclude same series/families
+  const [excludedFamilies, setExcludedFamilies] = useState([]); // Families to exclude
+  const [excludeImplementationCategories, setExcludeImplementationCategories] = useState(false); // Exclude implementation categories
   const [useCollection, setUseCollection] = useState(false);
   const [threadId, setThreadId] = useState(null);
   const [chatHistory, setChatHistory] = useState([]);
@@ -72,8 +75,98 @@ function PistaChat({ user }) {
   const [dislikeDetails, setDislikeDetails] = useState({}); // Store additional details for each message
   const [showDislikeInput, setShowDislikeInput] = useState({}); // Track which messages show input
   const [messageLimitError, setMessageLimitError] = useState(null); // Error message for message limit
+  const [showWelcomeMessage, setShowWelcomeMessage] = useState(true); // Show welcome message on first visit
+  // eslint-disable-next-line no-unused-vars
+  const [userJourneyState, setUserJourneyState] = useState(null); // Track user journey: 'game_in_mind', 'exploring', 'theme_preference', 'mechanics_preference'
 
   // Note: requiredFeatures state is managed via setRequiredFeatures in handleRequireFeature and removeRequiredFeature
+
+  // Debug: Log state changes for game search
+  useEffect(() => {
+  }, [atMentionActive, showGameSearch, gameSearchResults.length, featureSearchResults.length]);
+
+  // Auto-format search text when chips or flags change
+  // Only format if there are other chips/flags besides just a game (to allow game detail view)
+  useEffect(() => {
+    // Check if there are other chips/flags besides just games
+    const hasOtherFilters = playerChips.length > 0 ||
+                            playtimeChips.length > 0 ||
+                            activeRequiredFeatures.length > 0 ||
+                            useCollection ||
+                            excludeSameSeries ||
+                            gameChips.length > 1; // Multiple games
+
+    // Never auto-format if there's only a single game with no other filters
+    // This allows users to type the game name and get a description
+    // Also check if input is just the game name (possibly with trailing space)
+    // This prevents auto-formatting when a game is selected from @ dropdown
+    const inputTrimmed = input.trim();
+    const gameNameTrimmed = gameChips.length === 1 ? gameChips[0].name.trim() : '';
+    const isJustGameName = gameChips.length === 1 && gameNameTrimmed &&
+                          ((inputTrimmed === gameNameTrimmed) ||
+                           (inputTrimmed.startsWith(gameNameTrimmed + ' ') &&
+                            inputTrimmed.split(' ').length <= 2)); // Allow game name + one word (like a space or single character)
+
+    if ((!hasOtherFilters && gameChips.length === 1) || isJustGameName) {
+      // Single game with no other filters - don't auto-format, allow user to type or get game details
+      return;
+    }
+
+    // Build a natural language sentence from all chips and flags
+    const parts = [];
+
+    // Add games
+    if (gameChips.length > 0) {
+      if (gameChips.length === 1) {
+        parts.push(`games similar to ${gameChips[0].name}`);
+      } else {
+        const gameNames = gameChips.map(g => g.name).join(', ');
+        parts.push(`games similar to ${gameNames}`);
+      }
+    }
+
+    // Add player count
+    if (playerChips.length > 0) {
+      const playerCount = playerChips[0];
+      parts.push(`for ${playerCount} ${playerCount === 1 ? 'player' : 'players'}`);
+    }
+
+    // Add playtime
+    if (playtimeChips.length > 0) {
+      parts.push(`with ${playtimeChips[0].label.toLowerCase()} playtime`);
+    }
+
+    // Add required features
+    if (activeRequiredFeatures.length > 0) {
+      const featureNames = activeRequiredFeatures.map(f => f.value).join(', ');
+      parts.push(`with ${featureNames}`);
+    }
+
+    // Add collection flag
+    if (useCollection) {
+      parts.push('in my collection');
+    }
+
+    // Add exclude same series flag
+    if (excludeSameSeries) {
+      parts.push('excluding same series');
+    }
+
+    // Only update if we have at least one chip or flag, and input is empty or matches old format
+    if (parts.length > 0) {
+      const formattedText = parts.join(' ');
+      // Only update if input is empty or doesn't match the formatted text
+      // This prevents infinite loops when user is typing
+      const currentInput = input.trim();
+      if (currentInput === '' || currentInput !== formattedText.trim()) {
+        // Use a small delay to avoid conflicts with other input updates
+        const timeoutId = setTimeout(() => {
+          setInput(formattedText);
+        }, 100);
+        return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [gameChips, playerChips, playtimeChips, activeRequiredFeatures, useCollection, excludeSameSeries, input]);
 
   const loadChatHistory = useCallback(async () => {
     setLoadingHistory(true);
@@ -135,15 +228,22 @@ function PistaChat({ user }) {
     searchDebounceTimerRef.current = setTimeout(async () => {
       try {
         // Increase limit to 20 for better results
-        const res = await httpRequest(`${API_BASE}/games/search?q=${encodeURIComponent(trimmedQuery)}&limit=20`, { method: "GET" });
+        const searchUrl = `${API_BASE}/games/search?q=${encodeURIComponent(trimmedQuery)}&limit=20`;
+        console.log("Searching games:", searchUrl, "API_BASE:", API_BASE);
+        const res = await httpRequest(searchUrl, { method: "GET" });
+        console.log("Search response status:", res.status, res.ok, "statusText:", res.statusText);
         if (res.ok) {
           const data = await res.json();
+          console.log("Search response data:", data);
           // Handle both old format (array) and new format (object with games/features)
           if (Array.isArray(data)) {
             setGameSearchResults(data);
             setFeatureSearchResults([]);
+            console.log("Set game results (array format):", data.length);
           } else {
-            setGameSearchResults(data.games || []);
+            const games = data.games || [];
+            setGameSearchResults(games);
+            console.log("Set game results (object format):", games.length);
             // Reorder features: mechanics, categories, designers, artists
             const features = data.features || [];
             const orderedFeatures = [
@@ -154,11 +254,23 @@ function PistaChat({ user }) {
               ...features.filter(f => f.type === "publishers" && f.type !== "artists")
             ];
             setFeatureSearchResults(orderedFeatures);
+            console.log("Set feature results:", orderedFeatures.length);
           }
           setShowGameSearch(true);
+          console.log("Set showGameSearch to true");
+        } else {
+          console.error("Search request failed:", res.status, res.statusText);
+          const errorText = await res.text();
+          console.error("Error response:", errorText);
+          setShowGameSearch(false);
+          setGameSearchResults([]);
+          setFeatureSearchResults([]);
         }
       } catch (err) {
-        console.error("Search failed:", err);
+        console.error("Search failed with error:", err);
+        setShowGameSearch(false);
+        setGameSearchResults([]);
+        setFeatureSearchResults([]);
       }
     }, 200); // 200ms debounce
   }, []);
@@ -174,6 +286,7 @@ function PistaChat({ user }) {
       const textBeforeCursor = value.substring(0, cursorPos);
       const lastAtIndex = textBeforeCursor.lastIndexOf('@');
 
+
       if (lastAtIndex !== -1) {
         // Check if @ is not part of an email or already completed mention
         const textAfterAt = textBeforeCursor.substring(lastAtIndex + 1);
@@ -187,25 +300,30 @@ function PistaChat({ user }) {
         const queryEndMatch = fullTextAfterAt.match(/^([^\n]*)/);
         const query = queryEndMatch ? queryEndMatch[1].trim() : textAfterAt.trim();
 
+
         if (!hasNewlineAfterAt && query.length >= 0) {
           // @ mention is active - allow spaces in query
           setAtMentionActive(true);
           setAtMentionPosition(lastAtIndex);
           setAtMentionQuery(query); // Store the current query
+          console.log("@ mention detected, query:", query, "length:", query.length);
           if (query.length >= 2) {
+            console.log("Calling handleGameSearch with:", query);
             handleGameSearch(query);
           } else {
+            console.log("Query too short, hiding dropdown");
             setShowGameSearch(false);
             setGameSearchResults([]);
             setFeatureSearchResults([]);
           }
-          } else {
-            setAtMentionActive(false);
-            setShowGameSearch(false);
-            setGameSearchResults([]);
-            setFeatureSearchResults([]);
-            setAtMentionQuery("");
-          }
+        } else {
+          console.log("Deactivating @ mention");
+          setAtMentionActive(false);
+          setShowGameSearch(false);
+          setGameSearchResults([]);
+          setFeatureSearchResults([]);
+          setAtMentionQuery("");
+        }
       } else {
         setAtMentionActive(false);
         setShowGameSearch(false);
@@ -215,7 +333,7 @@ function PistaChat({ user }) {
       }
   };
 
-  const handleGameSelectFromMention = (game) => {
+  const handleGameSelectFromMention = async (game) => {
     if (!inputRef) return;
 
     const currentInput = input;
@@ -253,6 +371,35 @@ function PistaChat({ user }) {
     // Add game to chips if not already present
     if (!gameChips.find(g => g.id === game.id)) {
       setGameChips([...gameChips, game]);
+      // Fetch families for the game
+      const families = await fetchGameFamilies(game.id);
+      if (families.length > 0) {
+        // Filter to only include main series families (those that start with "Game: " or are the game name itself)
+        // This excludes generic families like "Digital Implementations: Steam" that are shared by many games
+        const gameNameLower = game.name.toLowerCase();
+        const mainSeriesFamilies = families.filter(family => {
+          const familyLower = family.toLowerCase();
+          // Include families that:
+          // 1. Start with "Game: " (main series indicator)
+          // 2. Match the game name exactly
+          // 3. Start with the game name followed by a colon or space
+          return familyLower.startsWith("game: ") ||
+                 familyLower === gameNameLower ||
+                 familyLower.startsWith(gameNameLower + ":") ||
+                 familyLower.startsWith(gameNameLower + " ");
+        });
+
+        // Log for debugging
+        console.log(`[DEBUG] Game: ${game.name}, Total families: ${families.length}, Main series families: ${mainSeriesFamilies.length}`, {
+          allFamilies: families,
+          mainSeriesFamilies: mainSeriesFamilies
+        });
+
+        // Store only main series families for exclusion
+        setExcludedFamilies(mainSeriesFamilies.length > 0 ? mainSeriesFamilies : []);
+        // Auto-enable exclude same series if main series families exist
+        setExcludeSameSeries(mainSeriesFamilies.length > 0);
+      }
     }
 
     // Reset mention state
@@ -294,13 +441,60 @@ function PistaChat({ user }) {
     }, 0);
   };
 
-  const selectGame = (game) => {
+  // Fetch families for a game
+  const fetchGameFamilies = async (gameId) => {
+    try {
+      const res = await httpRequest(`${API_BASE}/games/${gameId}/families`, {
+        method: "GET",
+        headers: authService.getAuthHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.families || [];
+      }
+    } catch (err) {
+      console.error("Error fetching game families:", err);
+    }
+    return [];
+  };
+
+  // eslint-disable-next-line no-unused-vars
+  const selectGame = async (game) => {
     if (atMentionActive) {
       handleGameSelectFromMention(game);
     } else {
       // Add game to chips if not already present
       if (!gameChips.find(g => g.id === game.id)) {
         setGameChips([...gameChips, game]);
+        // Fetch families for the game
+        const families = await fetchGameFamilies(game.id);
+        if (families.length > 0) {
+          // Filter to only include main series families (those that start with "Game: " or are the game name itself)
+          // This excludes generic families like "Digital Implementations: Steam" that are shared by many games
+          const gameNameLower = game.name.toLowerCase();
+          const mainSeriesFamilies = families.filter(family => {
+            const familyLower = family.toLowerCase();
+            // Include families that:
+            // 1. Start with "Game: " (main series indicator)
+            // 2. Match the game name exactly
+            // 3. Start with the game name followed by a colon or space
+            return familyLower.startsWith("game: ") ||
+                   familyLower === gameNameLower ||
+                   familyLower.startsWith(gameNameLower + ":") ||
+                   familyLower.startsWith(gameNameLower + " ");
+          });
+
+          // Log for debugging
+          console.log(`[DEBUG] Game: ${game.name}, Total families: ${families.length}, Main series families: ${mainSeriesFamilies.length}`, {
+            allFamilies: families,
+            mainSeriesFamilies: mainSeriesFamilies
+          });
+
+          // Store only main series families for exclusion
+          setExcludedFamilies(mainSeriesFamilies.length > 0 ? mainSeriesFamilies : []);
+          // Auto-enable exclude same series if main series families exist
+          setExcludeSameSeries(mainSeriesFamilies.length > 0);
+        }
       }
       setGameSearchResults([]);
       setFeatureSearchResults([]);
@@ -395,6 +589,12 @@ function PistaChat({ user }) {
     // Remove game chip
     const newGameChips = gameChips.filter(g => g.id !== gameId);
     setGameChips(newGameChips);
+
+    // Clear exclude same series if no games left
+    if (newGameChips.length === 0) {
+      setExcludeSameSeries(false);
+      setExcludedFamilies([]);
+    }
 
     // Remove game name from input textbox
     // Handle both comma-separated and space-separated formats
@@ -996,7 +1196,7 @@ function PistaChat({ user }) {
     });
   };
 
-  const sendMessage = async () => {
+  const sendMessage = async (messageTextOverride = null) => {
     // Prevent duplicate sends - if already processing, don't send again
     if (isProcessing) return;
 
@@ -1011,14 +1211,55 @@ function PistaChat({ user }) {
     // Clear any previous message limit error
     setMessageLimitError(null);
 
-    // Allow sending if there's input OR if there are active required features
-    if (!input.trim() && activeRequiredFeatures.length === 0) return;
-
-    // If input is empty but we have required features, use a default message
-    const messageText = input.trim() || (activeRequiredFeatures.length > 0
+    // Use override text if provided, otherwise use input
+    // Ensure messageText is always a string (not an event object)
+    let messageText = messageTextOverride || input.trim() || (activeRequiredFeatures.length > 0
       ? `Find games with ${activeRequiredFeatures.map(f => f.value).join(", ")}`
       : "");
+    // Convert to string if it's not already (safety check)
+    if (typeof messageText !== 'string') {
+      console.error('messageText is not a string:', messageText);
+      messageText = String(messageText);
+    }
     if (!messageText) return;
+
+    // Check if this is a response to a follow-up prompt (theme/mechanics preference)
+    // These should always trigger similarity search, not game detail view
+    const isPromptResponse = (() => {
+      if (messages.length === 0) return false;
+      const lastAssistantMsg = [...messages].reverse().find(m => m.role === "assistant");
+      if (!lastAssistantMsg) return false;
+      const lastText = lastAssistantMsg.text || "";
+      const hasFollowupPrompt = lastText.includes("Do you prefer") ||
+                               lastText.includes("prefer 1") ||
+                               lastText.includes("prefer 2");
+      const currentText = messageText.toLowerCase().trim();
+      const isPromptResponse = hasFollowupPrompt && (
+        currentText === "1" ||
+        currentText === "2" ||
+        currentText.includes("theme") ||
+        currentText.includes("mechanics")
+      );
+      return isPromptResponse;
+    })();
+
+    // Check if this is a "game detail only" query (only game chip, no other filters)
+    // Exclude if there are prompt chips (like "Games similar to") or any other text/context
+    // Also exclude if this is a response to a follow-up prompt
+    // Check messageText (not input) since sendMessage can be called with override text
+    const messageTextLower = messageText.toLowerCase();
+    const hasSearchKeywords = messageTextLower.match(/\b(similar|different|compare|like|games|find|search|recommend|with similar theme|with similar mechanics)\b/);
+
+    const hasOtherContext = playerChips.length > 0 ||
+                            playtimeChips.length > 0 ||
+                            activeRequiredFeatures.length > 0 ||
+                            useCollection ||
+                            chips.length > 0 ||
+                            promptChips.length > 0 ||
+                            isPromptResponse ||
+                            hasSearchKeywords; // Has search-related keywords in the message text
+
+    const isGameDetailOnly = gameChips.length === 1 && !hasOtherContext;
 
     const messageId = Date.now();
     const userMsg = {
@@ -1029,6 +1270,74 @@ function PistaChat({ user }) {
     };
     setMessages((prev) => [...prev, userMsg]);
 
+    // If this is a game detail only query, fetch game details instead of doing a search
+    // Note: This does NOT count against message limit (only search queries do)
+    if (isGameDetailOnly) {
+      const gameId = gameChips[0].id;
+
+      // Update message status to "sent"
+      setMessages((prev) => {
+        return prev.map(msg =>
+          msg.messageId === messageId
+            ? { ...msg, status: "sent" }
+            : msg
+        );
+      });
+
+      setIsProcessing(true);
+      setShowProcessingIndicator(false);
+
+      try {
+        const detailsRes = await httpRequest(`${API_BASE}/games/${gameId}/details`, {
+          method: "GET",
+          headers: authService.getAuthHeaders(),
+        });
+
+        if (detailsRes.ok) {
+          const gameDetails = await detailsRes.json();
+
+          // Create assistant message with game details
+          // Also include follow-up prompt to ask about theme/mechanics preference
+          const botMsg = {
+            role: "assistant",
+            text: `Here's information about ${gameDetails.name}:`,
+            gameDetails: gameDetails,
+            messageId: Date.now(),
+            liked: false,
+            disliked: false,
+            followupPrompt: "Do you prefer 1) the theme, or 2) the mechanics?", // Add follow-up prompt for game details too
+          };
+
+          setMessages((prev) => [...prev, botMsg]);
+          setIsProcessing(false);
+          if (processingTimeout) {
+            clearTimeout(processingTimeout);
+            setProcessingTimeout(null);
+          }
+          setShowProcessingIndicator(false);
+          return; // Exit early, don't proceed with normal chat flow
+        } else {
+          throw new Error("Failed to fetch game details");
+        }
+      } catch (err) {
+        console.error("Failed to fetch game details:", err);
+        // Show error message
+        const errorMsg = {
+          role: "assistant",
+          text: `Sorry, I couldn't fetch details for that game. Please try again.`,
+          messageId: Date.now(),
+        };
+        setMessages((prev) => [...prev, errorMsg]);
+        setIsProcessing(false);
+        if (processingTimeout) {
+          clearTimeout(processingTimeout);
+          setProcessingTimeout(null);
+        }
+        setShowProcessingIndicator(false);
+        return; // Exit early
+      }
+    }
+
     // Build context - include all feature information for feature-only searches
     const requiredFeatureValues = activeRequiredFeatures.length > 0 ?
       activeRequiredFeatures.reduce((acc, f) => {
@@ -1036,6 +1345,24 @@ function PistaChat({ user }) {
         acc[f.type].push(f.value);
         return acc;
       }, {}) : undefined;
+
+    // Build excluded feature values
+    const excludedFeatureValues = {};
+    if (excludeSameSeries && excludedFamilies.length > 0) {
+      excludedFeatureValues.families = excludedFamilies;
+    }
+    if (excludeImplementationCategories) {
+      // Implementation/publishing categories to exclude
+      excludedFeatureValues.categories = [
+        "Digital Implementation",
+        "Crowdfunding",
+        "Digital Game",
+        "App Implementation",
+        "Video Game Theme",
+        "Software"
+      ];
+    }
+    const finalExcludedFeatureValues = Object.keys(excludedFeatureValues).length > 0 ? excludedFeatureValues : undefined;
 
     const context = {
       last_game_id: gameChips.length > 0 ? gameChips[0].id : null,
@@ -1045,6 +1372,8 @@ function PistaChat({ user }) {
       playtime_chips: playtimeChips.map(c => c.value),
       // Include required features from active required features
       required_feature_values: requiredFeatureValues,
+      // Include excluded feature values for exclude same series
+      excluded_feature_values: finalExcludedFeatureValues,
     };
 
     // If useCollection is checked, explicitly set scope in message
@@ -1053,8 +1382,40 @@ function PistaChat({ user }) {
       finalMessageText = finalMessageText + " in my collection";
     }
 
-    // Increment message count for anonymous users
-    if (!user) {
+    // Check if this is a response to a prompt (theme/mechanics preference, etc.)
+    // Don't count responses to prompts against message limit
+    const isResponseToPrompt = (() => {
+      if (messages.length === 0) return false;
+
+      // Get the last assistant message
+      const lastAssistantMsg = [...messages].reverse().find(m => m.role === "assistant");
+      if (!lastAssistantMsg) return false;
+
+      const lastText = lastAssistantMsg.text || "";
+      const currentText = messageText.toLowerCase().trim();
+
+      // Check if last message contains a follow-up prompt
+      const hasFollowupPrompt = lastText.includes("Do you prefer") ||
+                                 lastText.includes("prefer 1") ||
+                                 lastText.includes("prefer 2");
+
+      // Check if current message is a response to that prompt
+      const isPromptResponse = hasFollowupPrompt && (
+        currentText === "1" ||
+        currentText === "2" ||
+        currentText.includes("theme") ||
+        currentText.includes("mechanics") ||
+        currentText.includes("the theme") ||
+        currentText.includes("the mechanics")
+      );
+
+      return isPromptResponse;
+    })();
+
+    // Increment message count for anonymous users (only for search queries, not game detail views or prompt responses)
+    // Game detail queries are handled above and don't reach here
+    // Prompt responses should not count against limit
+    if (!user && !isResponseToPrompt) {
       incrementMessageCount();
     }
 
@@ -1077,7 +1438,12 @@ function PistaChat({ user }) {
         body: JSON.stringify({
           user_id: user?.id?.toString() || null,
           message: finalMessageText,
-          context,
+          context: {
+            ...context,
+            // Pass theme/mechanics preference if this is a response to a prompt
+            theme_preference: isResponseToPrompt && (messageText.toLowerCase().includes("theme") || messageText.trim() === "1") ? "theme" : undefined,
+            mechanics_preference: isResponseToPrompt && (messageText.toLowerCase().includes("mechanics") || messageText.trim() === "2") ? "mechanics" : undefined,
+          },
           thread_id: threadId,
           selected_game_id: gameChips.length > 0 ? gameChips[0].id : null,
         }),
@@ -1151,6 +1517,7 @@ function PistaChat({ user }) {
           liked: false,
           disliked: false,
           feedbackQuestion: null,
+          followupPrompt: data.followup_prompt || null, // Store follow-up prompt
         };
 
         setMessages((prev) => [...prev, botMsg]);
@@ -1275,6 +1642,31 @@ function PistaChat({ user }) {
       }
     }
   };
+
+  // Handle welcome message options
+  const handleWelcomeOption = useCallback((option) => {
+    if (option === 'game_in_mind') {
+      setUserJourneyState('game_in_mind');
+      setShowWelcomeMessage(false);
+      // Add a message prompting user to search for a game
+      const welcomeMsg = {
+        role: "assistant",
+        text: "Great! Please search for a game using @ in the text box below. Type @ and start typing the game name.",
+        messageId: Date.now(),
+      };
+      setMessages([welcomeMsg]);
+    } else if (option === 'exploring') {
+      setUserJourneyState('exploring');
+      setShowWelcomeMessage(false);
+      // Start exploring mode - user can search freely
+      const welcomeMsg = {
+        role: "assistant",
+        text: "Let's explore! You can search for games by typing in the box below, or use @ to search for specific games, mechanics, or categories.",
+        messageId: Date.now(),
+      };
+      setMessages([welcomeMsg]);
+    }
+  }, []);
 
   // Define onAddToSearch callback before return
   const onAddToSearchCallback = useCallback((text, type, gameId) => {
@@ -1409,6 +1801,7 @@ function PistaChat({ user }) {
         >
           <MessageList
             messages={messages}
+            setMessages={setMessages}
             user={user}
             onGameClick={(game) => {
               // Only allow features editor for admin users
@@ -1421,6 +1814,8 @@ function PistaChat({ user }) {
             }}
             onAddToSearch={onAddToSearchCallback}
             onLikeDislike={handleLikeDislike}
+            showWelcomeMessage={showWelcomeMessage}
+            handleWelcomeOption={handleWelcomeOption}
             onFeedbackResponse={handleFeedbackResponse}
             helpfulQuestion={helpfulQuestion}
             showDislikeInput={showDislikeInput}
@@ -1428,7 +1823,6 @@ function PistaChat({ user }) {
             setDislikeDetails={setDislikeDetails}
             setShowDislikeInput={setShowDislikeInput}
             handleDislikeSubmit={handleDislikeSubmit}
-            setMessages={setMessages}
             onRequireFeature={(messageIndex, featureType, featureValue) => {
               // Use functional update to get latest input state
               setInput((currentInput) => {
@@ -1440,6 +1834,47 @@ function PistaChat({ user }) {
 
                 return newInput;
               });
+            }}
+            onFollowupSelect={(preferenceText) => {
+              // Ensure preferenceText is a string (not an event object)
+              if (typeof preferenceText !== 'string') {
+                console.error('onFollowupSelect received non-string:', preferenceText);
+                return;
+              }
+
+              // When selecting theme/mechanics preference, preserve the game name in the input
+              // Get the game name from chips if available, or from the last message's gameDetails
+              let gameName = '';
+              if (gameChips.length > 0) {
+                gameName = gameChips[0].name;
+              } else {
+                // Try to get game name from the last assistant message's gameDetails
+                const lastAssistantMsg = [...messages].reverse().find(m => m.role === "assistant" && m.gameDetails);
+                if (lastAssistantMsg && lastAssistantMsg.gameDetails) {
+                  gameName = lastAssistantMsg.gameDetails.name;
+                  // Also add the game to chips so it's available for the search
+                  if (lastAssistantMsg.gameDetails.id) {
+                    setGameChips([{ id: lastAssistantMsg.gameDetails.id, name: gameName }]);
+                  }
+                }
+              }
+
+              // Set input to include game name + preference text that makes it clear what the user wants
+              // preferenceText is "1" for theme or "2" for mechanics
+              const preferenceLabel = preferenceText === "1" ? "with similar theme" : "with similar mechanics";
+              const newInput = gameName ? `games similar to ${gameName} ${preferenceLabel}` : preferenceText;
+
+              // Ensure newInput is a string
+              if (typeof newInput !== 'string') {
+                console.error('newInput is not a string:', newInput);
+                return;
+              }
+
+              // Update input state for UI
+              setInput(newInput);
+
+              // Send message immediately with the new text (don't wait for state update)
+              sendMessage(newInput);
             }}
           />
         </div>
@@ -1570,108 +2005,6 @@ function PistaChat({ user }) {
             </div>
           )}
 
-          {/* Search dropdown for @ mentions - shows both games and features */}
-          {atMentionActive && showGameSearch && (gameSearchResults.length > 0 || featureSearchResults.length > 0) && (
-            <div className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000, maxHeight: "400px", overflowY: "auto" }}>
-              {/* Games section - shown first */}
-              {gameSearchResults.length > 0 && (
-                <>
-                  <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderBottom: "1px solid #ddd" }}>
-                    Games
-                  </div>
-                  {gameSearchResults.map((game) => {
-                    const textBeforeCursor = input.substring(0, cursorPosition);
-                    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-                    const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
-
-                    const highlightMatch = (text, query) => {
-                      if (!query) return text;
-                      const words = query.split(/\s+/).filter(w => w.length > 0);
-                      if (words.length === 0) return text;
-                      const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-                      const regex = new RegExp(`(${pattern})`, 'gi');
-                      const parts = text.split(regex);
-                      return parts.map((part, idx) =>
-                        regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
-                      );
-                    };
-
-                    return (
-                      <div
-                        key={game.id}
-                        className="game-search-item"
-                        onClick={() => selectGame(game)}
-                      >
-                        <div style={{ fontWeight: "bold" }}>
-                          {highlightMatch(game.name, query)}
-                          {game.year_published && ` (${game.year_published})`}
-                        </div>
-                        {game.features && game.features.length > 0 && (
-                          <div style={{ fontSize: "0.85rem", opacity: 0.7, marginTop: "0.25rem" }}>
-                            {game.features.slice(0, 5).map((f, idx) => (
-                              <span key={idx} style={{ marginRight: "0.5rem" }}>
-                                {f[0]} {f[1]}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </>
-              )}
-
-              {/* Features section - shown after games, ordered: mechanics, categories, designers, artists */}
-              {featureSearchResults.length > 0 && (
-                <>
-                  {gameSearchResults.length > 0 && (
-                    <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderTop: "1px solid #ddd", borderBottom: "1px solid #ddd" }}>
-                      Features
-                    </div>
-                  )}
-                  {!gameSearchResults.length && (
-                    <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderBottom: "1px solid #ddd" }}>
-                      Features
-                    </div>
-                  )}
-                  {featureSearchResults.map((feature) => {
-                    const textBeforeCursor = input.substring(0, cursorPosition);
-                    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-                    const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
-
-                    const highlightMatch = (text, query) => {
-                      if (!query) return text;
-                      const words = query.split(/\s+/).filter(w => w.length > 0);
-                      if (words.length === 0) return text;
-                      const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-                      const regex = new RegExp(`(${pattern})`, 'gi');
-                      const parts = text.split(regex);
-                      return parts.map((part, idx) =>
-                        regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
-                      );
-                    };
-
-                    return (
-                      <div
-                        key={`${feature.type}-${feature.id}`}
-                        className="game-search-item feature-search-item"
-                        onClick={() => selectFeature(feature)}
-                        style={{ paddingLeft: "2rem" }}
-                      >
-                        <div>
-                          <span style={{ marginRight: "0.5rem" }}>{feature.icon}</span>
-                          <span style={{ fontWeight: "500" }}>{highlightMatch(feature.name, query)}</span>
-                          <span style={{ fontSize: "0.85rem", opacity: 0.7, marginLeft: "0.5rem" }}>
-                            ({feature.type})
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </>
-              )}
-            </div>
-          )}
           <div className="chat-input-wrapper">
               {activeRequiredFeatures.length > 0 && (
                 <div className="required-features-bar">
@@ -1909,6 +2242,109 @@ function PistaChat({ user }) {
                     </button>
                   </div>
                 </div>
+
+                {/* Search dropdown for @ mentions - shows both games and features */}
+                {atMentionActive && showGameSearch && (gameSearchResults.length > 0 || featureSearchResults.length > 0) && (
+                  <div className="game-search-dropdown" style={{ position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: "0.5rem", zIndex: 1000, maxHeight: "400px", overflowY: "auto" }}>
+                    {/* Games section - shown first */}
+                    {gameSearchResults.length > 0 && (
+                      <>
+                        <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderBottom: "1px solid #ddd" }}>
+                          Games
+                        </div>
+                        {gameSearchResults.map((game) => {
+                          const textBeforeCursor = input.substring(0, cursorPosition);
+                          const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+                          const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
+
+                          const highlightMatch = (text, query) => {
+                            if (!query) return text;
+                            const words = query.split(/\s+/).filter(w => w.length > 0);
+                            if (words.length === 0) return text;
+                            const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+                            const regex = new RegExp(`(${pattern})`, 'gi');
+                            const parts = text.split(regex);
+                            return parts.map((part, idx) =>
+                              regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
+                            );
+                          };
+
+                          return (
+                            <div
+                              key={game.id}
+                              className="game-search-item"
+                              onClick={() => handleGameSelectFromMention(game)}
+                            >
+                              <div style={{ fontWeight: "bold" }}>
+                                {highlightMatch(game.name, query)}
+                                {game.year_published && ` (${game.year_published})`}
+                              </div>
+                              {game.features && game.features.length > 0 && (
+                                <div style={{ fontSize: "0.85rem", opacity: 0.7, marginTop: "0.25rem" }}>
+                                  {game.features.slice(0, 5).map((f, idx) => (
+                                    <span key={idx} style={{ marginRight: "0.5rem" }}>
+                                      {f[0]} {f[1]}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </>
+                    )}
+
+                    {/* Features section - shown after games, ordered: mechanics, categories, designers, artists */}
+                    {featureSearchResults.length > 0 && (
+                      <>
+                        {gameSearchResults.length > 0 && (
+                          <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderTop: "1px solid #ddd", borderBottom: "1px solid #ddd" }}>
+                            Features
+                          </div>
+                        )}
+                        {!gameSearchResults.length && (
+                          <div style={{ padding: "0.5rem", fontWeight: "bold", fontSize: "0.9rem", backgroundColor: "rgba(0,0,0,0.05)", borderBottom: "1px solid #ddd" }}>
+                            Features
+                          </div>
+                        )}
+                        {featureSearchResults.map((feature) => {
+                          const textBeforeCursor = input.substring(0, cursorPosition);
+                          const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+                          const query = lastAtIndex !== -1 ? textBeforeCursor.substring(lastAtIndex + 1).trim() : '';
+
+                          const highlightMatch = (text, query) => {
+                            if (!query) return text;
+                            const words = query.split(/\s+/).filter(w => w.length > 0);
+                            if (words.length === 0) return text;
+                            const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+                            const regex = new RegExp(`(${pattern})`, 'gi');
+                            const parts = text.split(regex);
+                            return parts.map((part, idx) =>
+                              regex.test(part) ? <mark key={idx} style={{ backgroundColor: '#ffeb3b', padding: '0 2px' }}>{part}</mark> : part
+                            );
+                          };
+
+                          return (
+                            <div
+                              key={`${feature.type}-${feature.id}`}
+                              className="game-search-item feature-search-item"
+                              onClick={() => selectFeature(feature)}
+                              style={{ paddingLeft: "2rem" }}
+                            >
+                              <div>
+                                <span style={{ marginRight: "0.5rem" }}>{feature.icon}</span>
+                                <span style={{ fontWeight: "500" }}>{highlightMatch(feature.name, query)}</span>
+                                <span style={{ fontSize: "0.85rem", opacity: 0.7, marginLeft: "0.5rem" }}>
+                                  ({feature.type})
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Filter ribbon below input */}
@@ -1961,6 +2397,30 @@ function PistaChat({ user }) {
                           In my collection
                         </label>
                       </div>
+                      {gameChips.length > 0 && excludedFamilies.length > 0 && (
+                        <div className="chip toggle">
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={excludeSameSeries}
+                              onChange={(e) => setExcludeSameSeries(e.target.checked)}
+                              aria-label="Exclude same series/families"
+                            />
+                            Exclude same series
+                          </label>
+                        </div>
+                      )}
+                      <div className="chip toggle">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={excludeImplementationCategories}
+                            onChange={(e) => setExcludeImplementationCategories(e.target.checked)}
+                            aria-label="Exclude implementation categories"
+                          />
+                          Exclude implementation categories
+                        </label>
+                      </div>
                       <button
                         className="filters-overlay-button"
                         onClick={() => setShowFiltersOverlay(true)}
@@ -1996,7 +2456,14 @@ function PistaChat({ user }) {
                           <span key={game.id} className="filter-chip game-chip">
                             🎮 {game.name}
                             <button
-                              onClick={() => removeGameChip(game.id)}
+                              onClick={() => {
+                                removeGameChip(game.id);
+                                // Clear exclude same series when game is removed
+                                if (gameChips.length === 1) {
+                                  setExcludeSameSeries(false);
+                                  setExcludedFamilies([]);
+                                }
+                              }}
                               className="filter-chip-remove"
                               aria-label={`Remove ${game.name} filter`}
                             >
@@ -2004,6 +2471,33 @@ function PistaChat({ user }) {
                             </button>
                           </span>
                         ))}
+                        {excludeSameSeries && excludedFamilies.length > 0 && (
+                          <span className="filter-chip exclude-chip">
+                            🚫 Exclude: {excludedFamilies.slice(0, 2).join(", ")}{excludedFamilies.length > 2 ? ` +${excludedFamilies.length - 2}` : ""}
+                            <button
+                              onClick={() => {
+                                setExcludeSameSeries(false);
+                                setExcludedFamilies([]);
+                              }}
+                              className="filter-chip-remove"
+                              aria-label="Remove exclude same series filter"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        )}
+                        {excludeImplementationCategories && (
+                          <span className="filter-chip exclude-chip">
+                            🚫 Exclude implementation categories
+                            <button
+                              onClick={() => setExcludeImplementationCategories(false)}
+                              className="filter-chip-remove"
+                              aria-label="Remove exclude implementation categories filter"
+                            >
+                              ×
+                            </button>
+                          </span>
+                        )}
                         {doINeedChips.map((chip) => (
                           <span key={chip.id} className="filter-chip">
                             ❓ Do I need {chip.name}?
@@ -2029,7 +2523,60 @@ function PistaChat({ user }) {
   );
 }
 
-function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, onFeedbackResponse, helpfulQuestion, onRequireFeature, showDislikeInput, dislikeDetails, setDislikeDetails, setShowDislikeInput, handleDislikeSubmit, onAddToSearch }) {
+// Component for ChatGPT-style slow rendering
+function TypingText({ text, querySpec, highlightText, speed = 20 }) {
+  const [displayedText, setDisplayedText] = useState("");
+  const [isComplete, setIsComplete] = useState(false);
+  const textRef = useRef(text);
+
+  useEffect(() => {
+    // Reset when text changes
+    if (textRef.current !== text) {
+      textRef.current = text;
+      setDisplayedText("");
+      setIsComplete(false);
+    }
+
+    if (isComplete || !text) return;
+
+    const fullText = text;
+    let currentIndex = displayedText.length;
+
+    const typeNextChar = () => {
+      if (currentIndex < fullText.length) {
+        setDisplayedText(fullText.substring(0, currentIndex + 1));
+        currentIndex++;
+        // Vary speed slightly for more natural feel
+        const delay = speed + Math.random() * 10;
+        setTimeout(typeNextChar, delay);
+      } else {
+        setIsComplete(true);
+      }
+    };
+
+    // Start typing after a short delay
+    const timeoutId = setTimeout(typeNextChar, 50);
+    return () => clearTimeout(timeoutId);
+  }, [text, displayedText, isComplete, speed]);
+
+  // If text changed, reset
+  useEffect(() => {
+    if (textRef.current !== text) {
+      textRef.current = text;
+      setDisplayedText("");
+      setIsComplete(false);
+    }
+  }, [text]);
+
+  // Render highlighted text if querySpec exists and text is complete, otherwise plain text
+  if (querySpec && isComplete) {
+    return highlightText(displayedText, querySpec);
+  }
+
+  return <>{displayedText}</>;
+}
+
+function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, onFeedbackResponse, helpfulQuestion, onRequireFeature, showDislikeInput, dislikeDetails, setDislikeDetails, setShowDislikeInput, handleDislikeSubmit, onAddToSearch, showWelcomeMessage, handleWelcomeOption, onFollowupSelect }) {
   const messagesEndRef = useRef(null);
 
   // Auto-scroll to bottom when messages change
@@ -2074,17 +2621,54 @@ function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, 
     });
   };
 
+
   return (
     <div className="messages">
-      {messages.length === 0 ? (
+      {messages.length === 0 && showWelcomeMessage ? (
+        <div className="welcome-message">
+          <div className="welcome-content">
+            <h3>Welcome to Pista! 👋</h3>
+            <p>How would you like to get started?</p>
+            <div className="welcome-options">
+              <button
+                className="welcome-option-btn"
+                onClick={() => handleWelcomeOption('game_in_mind')}
+              >
+                <span className="welcome-option-icon">🎮</span>
+                <div>
+                  <strong>Do you have a game in mind?</strong>
+                  <p>Search for a specific game to learn more about it</p>
+                </div>
+              </button>
+              <button
+                className="welcome-option-btn"
+                onClick={() => handleWelcomeOption('exploring')}
+              >
+                <span className="welcome-option-icon">🔍</span>
+                <div>
+                  <strong>I feel like exploring</strong>
+                  <p>Discover new games based on your preferences</p>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : messages.length === 0 ? (
         <div className="empty-chat">Start a conversation to see messages here</div>
       ) : (
         messages.map((m, idx) => (
           <div key={idx} className={`msg msg--${m.role}`}>
             <div className="msg-text">
-              {m.role === "assistant" && m.querySpec
-                ? highlightText(m.text, m.querySpec)
-                : m.text}
+              {m.role === "assistant" ? (
+                <TypingText
+                  text={m.text || ""}
+                  querySpec={m.querySpec}
+                  highlightText={highlightText}
+                  speed={15}
+                />
+              ) : (
+                typeof m.text === 'string' ? m.text : String(m.text || '')
+              )}
             </div>
             {/* Status bar for user messages */}
             {m.role === "user" && m.status && (
@@ -2100,7 +2684,29 @@ function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, 
             {m.image && (
               <img src={m.image} alt="Generated" className="generated-image" />
             )}
-            {m.abTest ? (
+            {m.gameDetails ? (
+              <>
+                <GameDetailView
+                  gameDetails={m.gameDetails}
+                  onGameClick={onGameClick}
+                  onRequireFeature={onRequireFeature}
+                  onAddToSearch={onAddToSearch}
+                />
+                {m.followupPrompt && (
+                  <FollowupPrompt
+                    prompt={m.followupPrompt}
+                    messageIndex={idx}
+                    onSelect={(preference) => {
+                      // Send a new message with the preference
+                      const preferenceText = preference === "theme" ? "1" : "2";
+                      if (onFollowupSelect) {
+                        onFollowupSelect(preferenceText);
+                      }
+                    }}
+                  />
+                )}
+              </>
+            ) : m.abTest ? (
               <ABTestResults
                 abTest={m.abTest}
                 onGameClick={onGameClick}
@@ -2110,14 +2716,29 @@ function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, 
                 onAddToSearch={onAddToSearch}
               />
             ) : m.results && m.results.length > 0 && (
-              <GameResultList
-                results={m.results}
-                onGameClick={onGameClick}
-                onRequireFeature={onRequireFeature}
-                messageIndex={idx}
-                querySpec={m.querySpec}
-                onAddToSearch={onAddToSearch}
-              />
+              <>
+                <GameResultList
+                  results={m.results}
+                  onGameClick={onGameClick}
+                  onRequireFeature={onRequireFeature}
+                  messageIndex={idx}
+                  querySpec={m.querySpec}
+                  onAddToSearch={onAddToSearch}
+                />
+                {m.followupPrompt && (
+                  <FollowupPrompt
+                    prompt={m.followupPrompt}
+                    messageIndex={idx}
+                    onSelect={(preference) => {
+                      // Send a new message with the preference
+                      const preferenceText = preference === "theme" ? "1" : "2";
+                      if (onFollowupSelect) {
+                        onFollowupSelect(preferenceText);
+                      }
+                    }}
+                  />
+                )}
+              </>
             )}
             {m.role === "assistant" && user && helpfulQuestion && !m.isFakeDoor && (
               <div className="message-feedback">
@@ -2198,7 +2819,663 @@ function MessageList({ messages, setMessages, onGameClick, user, onLikeDislike, 
   );
 }
 
+function GameDetailView({ gameDetails, onGameClick, onRequireFeature, onAddToSearch }) {
+  const [showFullDescription, setShowFullDescription] = useState(false);
+  const [showMoreFeatures, setShowMoreFeatures] = useState(false);
+
+  const descriptionPreview = gameDetails.description
+    ? (gameDetails.description.length > 150
+        ? gameDetails.description.substring(0, 150) + "..."
+        : gameDetails.description)
+    : "No description available.";
+
+  const shouldTruncateDescription = gameDetails.description && gameDetails.description.length > 150;
+
+  return (
+    <div className="game-detail-view">
+      <div className="game-detail-card">
+        {gameDetails.thumbnail && (
+          <img
+            src={gameDetails.thumbnail}
+            alt={gameDetails.name}
+            className="game-detail-thumbnail"
+            onClick={() => onGameClick && onGameClick(gameDetails.id)}
+          />
+        )}
+        <div className="game-detail-content">
+          <h3
+            className="game-detail-title"
+            onClick={() => onGameClick && onGameClick(gameDetails.id)}
+            style={{ cursor: "pointer", color: "#1976d2" }}
+          >
+            {gameDetails.name}
+          </h3>
+
+          <div className="game-detail-meta">
+            {gameDetails.year_published && (
+              <span>📅 {gameDetails.year_published}</span>
+            )}
+            {gameDetails.min_players !== null && gameDetails.max_players !== null && (
+              <span>👥 {gameDetails.min_players === gameDetails.max_players
+                ? `${gameDetails.min_players} players`
+                : `${gameDetails.min_players}-${gameDetails.max_players} players`}
+              </span>
+            )}
+            {gameDetails.average_rating && (
+              <span>⭐ {gameDetails.average_rating.toFixed(1)} ({gameDetails.num_ratings} ratings)</span>
+            )}
+          </div>
+
+          <div className="game-detail-description">
+            <p>
+              {showFullDescription ? gameDetails.description : descriptionPreview}
+            </p>
+            {shouldTruncateDescription && (
+              <button
+                className="show-more-btn"
+                onClick={() => setShowFullDescription(!showFullDescription)}
+              >
+                {showFullDescription ? "Show Less" : "Show More"}
+              </button>
+            )}
+          </div>
+
+          <div className="game-detail-features">
+            <h4>Categories</h4>
+            <div className="feature-chips">
+              {gameDetails.categories && gameDetails.categories.length > 0 ? (
+                gameDetails.categories.map((cat, idx) => (
+                  <span
+                    key={idx}
+                    className="feature-chip"
+                    onClick={() => onRequireFeature && onRequireFeature("categories", cat)}
+                    style={{ cursor: "pointer" }}
+                    title="Click to search for games with this category"
+                  >
+                    {cat}
+                  </span>
+                ))
+              ) : (
+                <span className="no-features">No categories available</span>
+              )}
+            </div>
+
+            <h4>Mechanics</h4>
+            <div className="feature-chips">
+              {gameDetails.mechanics && gameDetails.mechanics.length > 0 ? (
+                gameDetails.mechanics.map((mech, idx) => (
+                  <span
+                    key={idx}
+                    className="feature-chip"
+                    onClick={() => onRequireFeature && onRequireFeature("mechanics", mech)}
+                    style={{ cursor: "pointer" }}
+                    title="Click to search for games with this mechanic"
+                  >
+                    {mech}
+                  </span>
+                ))
+              ) : (
+                <span className="no-features">No mechanics available</span>
+              )}
+            </div>
+
+            {gameDetails.families && gameDetails.families.length > 0 && (
+              <>
+                {!showMoreFeatures && (
+                  <button
+                    className="show-more-features-btn"
+                    onClick={() => setShowMoreFeatures(true)}
+                  >
+                    More
+                  </button>
+                )}
+                {showMoreFeatures && (
+                  <>
+                    <h4>Families</h4>
+                    <div className="feature-chips">
+                      {gameDetails.families.map((family, idx) => (
+                        <span
+                          key={idx}
+                          className="feature-chip"
+                          onClick={() => onRequireFeature && onRequireFeature("families", family)}
+                          style={{ cursor: "pointer" }}
+                          title="Click to search for games in this family"
+                        >
+                          {family}
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Component for slow rendering of tiles and chips
+function TypingTiles({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand, querySpec, onAddToSearch, tileDelay = 100, chipDelay = 30, onLoadMore }) {
+  const [visibleTiles, setVisibleTiles] = useState([]);
+  const [visibleChips, setVisibleChips] = useState({}); // { tileId: number of visible chips }
+  const [displayedCount, setDisplayedCount] = useState(5); // Show 5 tiles initially
+
+  useEffect(() => {
+    if (!results || results.length === 0) return;
+
+    // Reset when results change
+    setVisibleTiles([]);
+    setVisibleChips({});
+    setDisplayedCount(5); // Reset to initial count
+
+    // Render tiles one by one up to displayedCount
+    let tileIndex = 0;
+    const maxTiles = Math.min(displayedCount, results.length);
+    const renderNextTile = () => {
+      if (tileIndex < maxTiles) {
+        setVisibleTiles(prev => [...prev, tileIndex]);
+        tileIndex++;
+        setTimeout(renderNextTile, tileDelay);
+      }
+    };
+
+    // Start rendering after a short delay
+    const timeoutId = setTimeout(renderNextTile, 50);
+    return () => clearTimeout(timeoutId);
+  }, [results, tileDelay, displayedCount]);
+
+  // Render chips for each visible tile progressively
+  useEffect(() => {
+    visibleTiles.forEach((tileIdx) => {
+      const game = results[tileIdx];
+      if (!game || !game.game_id) return;
+
+      const gameId = game.game_id;
+      if (visibleChips[gameId] !== undefined) return; // Already started rendering chips for this tile
+
+      // Get all chips for this tile
+      const allChips = [];
+      // Add shared features, missing features, extra features, etc.
+      if (game.shared_mechanics) {
+        game.shared_mechanics.forEach(m => allChips.push({ type: "mechanics", value: m }));
+      }
+      if (game.shared_categories) {
+        game.shared_categories.forEach(c => allChips.push({ type: "categories", value: c }));
+      }
+      if (game.shared_designers) {
+        game.shared_designers.forEach(d => allChips.push({ type: "designers", value: d }));
+      }
+      if (game.shared_families) {
+        game.shared_families.forEach(f => allChips.push({ type: "families", value: f }));
+      }
+      if (game.missing_mechanics) {
+        game.missing_mechanics.forEach(m => allChips.push({ type: "mechanics", value: m, isMissing: true }));
+      }
+      if (game.missing_categories) {
+        game.missing_categories.forEach(c => allChips.push({ type: "categories", value: c, isMissing: true }));
+      }
+      if (game.extra_mechanics) {
+        game.extra_mechanics.forEach(m => allChips.push({ type: "mechanics", value: m, isExtra: true }));
+      }
+      if (game.extra_categories) {
+        game.extra_categories.forEach(c => allChips.push({ type: "categories", value: c, isExtra: true }));
+      }
+
+      if (allChips.length === 0) {
+        setVisibleChips(prev => ({ ...prev, [gameId]: 0 }));
+        return;
+      }
+
+      // Start rendering chips for this tile
+      setVisibleChips(prev => ({ ...prev, [gameId]: 0 }));
+
+      let chipIndex = 0;
+      const renderNextChip = () => {
+        if (chipIndex < allChips.length) {
+          setVisibleChips(prev => ({ ...prev, [gameId]: chipIndex + 1 }));
+          chipIndex++;
+          setTimeout(renderNextChip, chipDelay);
+        }
+      };
+
+      // Start rendering chips after tile is visible
+      setTimeout(renderNextChip, tileDelay);
+    });
+  }, [visibleTiles, results, chipDelay, tileDelay, visibleChips]);
+
+  if (!results || results.length === 0) {
+    return null;
+  }
+
+  const handleLoadMore = () => {
+    if (onLoadMore) {
+      // If callback provided, use it to fetch more from backend
+      onLoadMore();
+    } else {
+      // Otherwise, just show more from existing results
+      setDisplayedCount(prev => Math.min(prev + 5, results.length));
+    }
+  };
+
+  // Check if there are more results to show
+  // Show button if we haven't displayed all results yet
+  const hasMore = displayedCount < results.length;
+
+  return (
+    <div className="game-results">
+      {visibleTiles.map((tileIdx) => {
+        const r = results[tileIdx];
+        if (!r || !r.game_id) return null;
+
+        const gameId = r.game_id;
+        const chipsToShow = visibleChips[gameId] || 0;
+
+        // Render the tile (we'll pass chipsToShow to the rendering logic)
+        // For now, we'll render all chips but with opacity animation
+        return (
+          <GameTile
+            key={r.game_id}
+            game={r}
+            tileIdx={tileIdx}
+            chipsToShow={chipsToShow}
+            onGameClick={onGameClick}
+            onRequireFeature={onRequireFeature}
+            messageIndex={messageIndex}
+            variant={variant}
+            differences={differences}
+            expandedGames={expandedGames}
+            toggleExpand={toggleExpand}
+            querySpec={querySpec}
+            onAddToSearch={onAddToSearch}
+          />
+        );
+      })}
+      {hasMore && (
+        <div className="load-more-tile">
+          <button onClick={handleLoadMore} title="Load more results">
+            +
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand, querySpec, onAddToSearch }) {
+  // If expandedGames is passed as prop (for A/B tests), use it; otherwise create local state
+  const [localExpanded, setLocalExpanded] = useState(new Set());
+  const isExpanded = (gameId) => {
+    if (expandedGames !== undefined) {
+      return expandedGames.has(gameId);
+    }
+    return localExpanded.has(gameId);
+  };
+  const handleToggleExpand = (gameId) => {
+    if (toggleExpand) {
+      toggleExpand(gameId);
+    } else {
+      setLocalExpanded((prev) => {
+        const newSet = new Set(prev);
+        if (newSet.has(gameId)) {
+          newSet.delete(gameId);
+        } else {
+          newSet.add(gameId);
+        }
+        return newSet;
+      });
+    }
+  };
+
+  if (!results || results.length === 0) {
+    return null;
+  }
+
+  return (
+    <TypingTiles
+      results={results}
+      onGameClick={onGameClick}
+      onRequireFeature={onRequireFeature}
+      messageIndex={messageIndex}
+      variant={variant}
+      differences={differences}
+      expandedGames={expandedGames}
+      toggleExpand={handleToggleExpand}
+      querySpec={querySpec}
+      onAddToSearch={onAddToSearch}
+    />
+  );
+}
+
+// Helper component to render a single game tile with slow chip rendering
+function GameTile({ game: r, tileIdx, chipsToShow, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand, querySpec, onAddToSearch }) {
+  // Check if game is expanded using expandedGames prop
+  const isExpanded = (gameId) => {
+    if (expandedGames !== undefined) {
+      return expandedGames.has(gameId);
+    }
+    return false;
+  };
+
+  const handleToggleExpand = (gameId) => {
+    if (toggleExpand) {
+      toggleExpand(gameId);
+    }
+  };
+
+  // Check if this is a collection_recommendation result
+  const isCollectionRecommendation = querySpec?.intent === "collection_recommendation" &&
+    (r.missing_mechanics || r.missing_categories || r.extra_mechanics || r.extra_categories);
+
+  // Extract features
+  const sharedFeatures = [];
+  const hasAllFeatures = r.mechanics || r.categories || r.designers_list || r.families;
+
+  if (hasAllFeatures) {
+    if (r.mechanics) {
+      r.mechanics.forEach(m => sharedFeatures.push({ type: "mechanics", value: m }));
+    }
+    if (r.categories) {
+      r.categories.forEach(c => sharedFeatures.push({ type: "categories", value: c }));
+    }
+    if (r.designers_list) {
+      r.designers_list.forEach(d => sharedFeatures.push({ type: "designers", value: d }));
+    }
+    if (r.families) {
+      r.families.forEach(f => sharedFeatures.push({ type: "families", value: f }));
+    }
+  } else {
+    if (r.shared_mechanics) {
+      r.shared_mechanics.forEach(m => sharedFeatures.push({ type: "mechanics", value: m }));
+    }
+    if (r.shared_categories) {
+      r.shared_categories.forEach(c => sharedFeatures.push({ type: "categories", value: c }));
+    }
+    if (r.shared_designers) {
+      r.shared_designers.forEach(d => sharedFeatures.push({ type: "designers", value: d }));
+    }
+    if (r.shared_families) {
+      r.shared_families.forEach(f => sharedFeatures.push({ type: "families", value: f }));
+    }
+  }
+
+  const missingFeatures = [];
+  const extraFeatures = [];
+  if (isCollectionRecommendation) {
+    if (r.missing_mechanics) {
+      r.missing_mechanics.forEach(m => missingFeatures.push({ type: "mechanics", value: m }));
+    }
+    if (r.missing_categories) {
+      r.missing_categories.forEach(c => missingFeatures.push({ type: "categories", value: c }));
+    }
+    if (r.missing_designers) {
+      r.missing_designers.forEach(d => missingFeatures.push({ type: "designers", value: d }));
+    }
+    if (r.missing_families) {
+      r.missing_families.forEach(f => missingFeatures.push({ type: "families", value: f }));
+    }
+    if (r.extra_mechanics) {
+      r.extra_mechanics.forEach(m => extraFeatures.push({ type: "mechanics", value: m }));
+    }
+    if (r.extra_categories) {
+      r.extra_categories.forEach(c => extraFeatures.push({ type: "categories", value: c }));
+    }
+    if (r.extra_designers) {
+      r.extra_designers.forEach(d => extraFeatures.push({ type: "designers", value: d }));
+    }
+    if (r.extra_families) {
+      r.extra_families.forEach(f => extraFeatures.push({ type: "families", value: f }));
+    }
+  }
+
+  const isUnique = variant && differences && (
+    (variant === "A" && differences.onlyInA.some(g => g.game_id === r.game_id)) ||
+    (variant === "B" && differences.onlyInB.some(g => g.game_id === r.game_id))
+  );
+
+  // Get all chips for this tile
+  const allChips = [...sharedFeatures, ...missingFeatures, ...extraFeatures];
+  const visibleChips = allChips.slice(0, chipsToShow);
+
+  return (
+    <div
+      className={`game-card ${isUnique ? "ab-test-unique" : ""}`}
+      key={r.game_id}
+      style={{
+        border: isUnique ? "2px solid #1976d2" : undefined,
+        backgroundColor: isUnique ? "rgba(25, 118, 210, 0.05)" : undefined,
+        display: "flex",
+        gap: "1rem",
+        alignItems: "flex-start",
+        opacity: chipsToShow === 0 ? 0.3 : 1,
+        transition: "opacity 0.3s ease-in"
+      }}
+    >
+      <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start", flex: 1 }}>
+        {r.thumbnail && (
+          <img
+            src={r.thumbnail}
+            alt={r.name || "Game"}
+            style={{ width: "80px", height: "80px", objectFit: "cover", borderRadius: "4px" }}
+          />
+        )}
+        <div style={{ flex: 1 }}>
+          <div
+            className="game-card__title"
+            style={{ cursor: "pointer", color: "#1976d2" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onAddToSearch) {
+                onAddToSearch(r.name || `Game ${r.game_id}`, 'game', r.game_id);
+              }
+            }}
+            title="Click to search for this game"
+          >
+            {r.name || `Game ${r.game_id}`}
+          </div>
+          <div className="game-card__meta">
+            {r.designers && r.designers.length > 0 && (
+              <span style={{ marginRight: "1rem", fontSize: "0.9em", opacity: 0.8 }}>
+                👤 {r.designers.map((designer, idx) => (
+                  <span key={idx}>
+                    <span
+                      style={{ cursor: "pointer", color: "#1976d2", textDecoration: "underline" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (onAddToSearch) {
+                          onAddToSearch(designer, 'designer');
+                        }
+                      }}
+                      title="Click to search for this designer"
+                    >
+                      {designer}
+                    </span>
+                    {idx < r.designers.length - 1 && ", "}
+                  </span>
+                ))}
+              </span>
+            )}
+            {r.year_published && (
+              <span style={{ marginRight: "1rem", fontSize: "0.9em", opacity: 0.8 }}>
+                📅 {r.year_published}
+              </span>
+            )}
+            {(r.similarity_score !== undefined && r.similarity_score !== null) ||
+             (r.final_score !== undefined && r.final_score !== null) ||
+             (r.embedding_similarity !== undefined && r.embedding_similarity !== null) ? (
+              <span style={{
+                fontWeight: isCollectionRecommendation ? "bold" : "normal",
+                color: isCollectionRecommendation ? "#1976d2" : "inherit"
+              }}>
+                Similarity:{" "}
+                {r.similarity_score !== undefined && r.similarity_score !== null
+                  ? (r.similarity_score * 100).toFixed(1) + "%"
+                  : (r.final_score !== undefined && r.final_score !== null
+                      ? (r.final_score * 100).toFixed(1) + "%"
+                      : (r.embedding_similarity !== undefined && r.embedding_similarity !== null
+                          ? (r.embedding_similarity * 100).toFixed(1) + "%"
+                          : "N/A"))}
+              </span>
+            ) : null}
+            {r.average_rating && (
+              <span style={{ marginLeft: "1rem" }}>
+                ⭐ {typeof r.average_rating === 'number' ? r.average_rating.toFixed(1) : r.average_rating}
+                {r.num_ratings && (
+                  <span style={{ marginLeft: "0.5rem", opacity: 0.7, fontSize: "0.9em" }}>
+                    ({typeof r.num_ratings === 'number' ? r.num_ratings.toLocaleString() : r.num_ratings})
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+          {r.description && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleExpand(r.game_id);
+              }}
+              style={{
+                marginTop: "0.5rem",
+                padding: "0.25rem 0.5rem",
+                fontSize: "0.85rem",
+                border: "1px solid #ddd",
+                borderRadius: "4px",
+                background: "transparent",
+                cursor: "pointer"
+              }}
+            >
+              {isExpanded(r.game_id) ? "Show less" : "Show more"}
+            </button>
+          )}
+          {isExpanded(r.game_id) && r.description && (
+            <div style={{ marginTop: "0.5rem", padding: "0.5rem", backgroundColor: "var(--bg-secondary, #f5f5f5)", borderRadius: "4px", fontSize: "0.9rem", lineHeight: "1.5" }}>
+              {r.description}
+            </div>
+          )}
+          {/* Render chips progressively */}
+          {isCollectionRecommendation ? (
+            <div style={{ marginTop: "0.5rem" }}>
+              {sharedFeatures.length > 0 && (
+                <div style={{ marginBottom: "0.5rem" }}>
+                  <div style={{ fontSize: "0.85rem", fontWeight: "bold", marginBottom: "0.25rem", color: "#4caf50" }}>
+                    ✓ Similarities:
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+                    {sharedFeatures.slice(0, chipsToShow).map((feature, idx) => (
+                      <span
+                        key={`shared-${feature.type}-${feature.value}-${idx}`}
+                        style={{
+                          padding: "0.25rem 0.5rem",
+                          backgroundColor: "#e8f5e9",
+                          border: "1px solid #4caf50",
+                          borderRadius: "4px",
+                          fontSize: "0.85rem",
+                          color: "#2e7d32",
+                          opacity: idx < chipsToShow ? 1 : 0,
+                          transition: "opacity 0.2s ease-in"
+                        }}
+                      >
+                        {feature.value}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {missingFeatures.length > 0 && (
+                <div style={{ marginBottom: "0.5rem" }}>
+                  <div style={{ fontSize: "0.85rem", fontWeight: "bold", marginBottom: "0.25rem", color: "#ff9800" }}>
+                    + Missing (in target game):
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+                    {missingFeatures.slice(0, Math.max(0, chipsToShow - sharedFeatures.length)).map((feature, idx) => (
+                      <span
+                        key={`missing-${feature.type}-${feature.value}-${idx}`}
+                        style={{
+                          padding: "0.25rem 0.5rem",
+                          backgroundColor: "#fff3e0",
+                          border: "1px solid #ff9800",
+                          borderRadius: "4px",
+                          fontSize: "0.85rem",
+                          color: "#e65100",
+                          opacity: (sharedFeatures.length + idx) < chipsToShow ? 1 : 0,
+                          transition: "opacity 0.2s ease-in"
+                        }}
+                      >
+                        {feature.value}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {extraFeatures.length > 0 && (
+                <div style={{ marginBottom: "0.5rem" }}>
+                  <div style={{ fontSize: "0.85rem", fontWeight: "bold", marginBottom: "0.25rem", color: "#2196f3" }}>
+                    - Extra (in your collection game):
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+                    {extraFeatures.slice(0, Math.max(0, chipsToShow - sharedFeatures.length - missingFeatures.length)).map((feature, idx) => (
+                      <span
+                        key={`extra-${feature.type}-${feature.value}-${idx}`}
+                        style={{
+                          padding: "0.25rem 0.5rem",
+                          backgroundColor: "#e3f2fd",
+                          border: "1px solid #2196f3",
+                          borderRadius: "4px",
+                          fontSize: "0.85rem",
+                          color: "#1565c0",
+                          opacity: (sharedFeatures.length + missingFeatures.length + idx) < chipsToShow ? 1 : 0,
+                          transition: "opacity 0.2s ease-in"
+                        }}
+                      >
+                        {feature.value}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{ marginTop: "0.5rem" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem" }}>
+                {visibleChips.map((feature, idx) => (
+                  <span
+                    key={`feature-${feature.type}-${feature.value}-${idx}`}
+                    style={{
+                      padding: "0.25rem 0.5rem",
+                      backgroundColor: "#e3f2fd",
+                      border: "1px solid #2196f3",
+                      borderRadius: "4px",
+                      fontSize: "0.85rem",
+                      color: "#1565c0",
+                      opacity: idx < chipsToShow ? 1 : 0,
+                      transition: "opacity 0.2s ease-in",
+                      cursor: onRequireFeature ? "pointer" : "default"
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onRequireFeature) {
+                        // onRequireFeature expects (messageIndex, featureType, featureValue)
+                        onRequireFeature(messageIndex, feature.type, feature.value);
+                      }
+                    }}
+                    title={onRequireFeature ? "Click to add to search" : undefined}
+                  >
+                    {feature.value}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// eslint-disable-next-line no-unused-vars
+// Keep the original GameResultList for backward compatibility, but use TypingTiles
+function GameResultListOriginal({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand, querySpec, onAddToSearch }) {
   // If expandedGames is passed as prop (for A/B tests), use it; otherwise create local state
   const [localExpanded, setLocalExpanded] = useState(new Set());
   const isExpanded = (gameId) => {
@@ -2677,6 +3954,39 @@ function ABTestResults({ abTest, onGameClick, onRequireFeature, messageIndex, on
           />
         </div>
       )}
+    </div>
+  );
+}
+
+function FollowupPrompt({ prompt, messageIndex, onSelect }) {
+  // Parse the prompt to extract options
+  // Expected format: "Do you prefer 1) the theme, or 2) the mechanics?"
+  const themeMatch = prompt.match(/1\)\s*(the\s+)?theme/i);
+  const mechanicsMatch = prompt.match(/2\)\s*(the\s+)?mechanics/i);
+
+  return (
+    <div className="followup-prompt">
+      <div className="followup-prompt-text">
+        {prompt}
+      </div>
+      <div className="followup-prompt-options">
+        {themeMatch && (
+          <button
+            className="followup-prompt-option"
+            onClick={() => onSelect("theme")}
+          >
+            1) The theme
+          </button>
+        )}
+        {mechanicsMatch && (
+          <button
+            className="followup-prompt-option"
+            onClick={() => onSelect("mechanics")}
+          >
+            2) The mechanics
+          </button>
+        )}
+      </div>
     </div>
   );
 }

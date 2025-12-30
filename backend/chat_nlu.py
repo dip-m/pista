@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = os.path.dirname(__file__)
 NAME_MAP_PATH = os.path.join(BASE_DIR, "..", "name_id_map.json")
 
+
 # Load name_id_map.json, or generate it from database if it doesn't exist
 def load_name_id_map() -> Dict[str, Any]:
     """Load name_id_map.json, generating it from database if needed."""
@@ -20,13 +21,13 @@ def load_name_id_map() -> Dict[str, Any]:
                 return json.load(f)
         except Exception as e:
             logger.warning(f"Failed to load {NAME_MAP_PATH}: {e}. Will generate from database.")
-    
+
     # File doesn't exist or failed to load - generate from database
     logger.info(f"{NAME_MAP_PATH} not found. Generating from database...")
     try:
         from update_utils.export_name_id_map import get_name_id_map
         from backend.db import get_connection, put_connection
-        
+
         # Get database connection
         conn = get_connection()
         try:
@@ -47,6 +48,7 @@ def load_name_id_map() -> Dict[str, Any]:
         logger.error(f"Failed to generate name_id_map from database: {e}", exc_info=True)
         # Return empty dict as fallback - game name resolution won't work, but app won't crash
         return {}
+
 
 NAME_TO_ID: Dict[str, Any] = load_name_id_map()
 
@@ -78,8 +80,8 @@ for name_key, gid in NAME_TO_ID.items():
 
     NAME_INDEX.append(
         {
-            "name": norm,          # normalized full name
-            "tokens": tokens,      # token list
+            "name": norm,  # normalized full name
+            "tokens": tokens,  # token list
             "token_len": len(tokens),
             "char_len": len(norm),
             "id": gid,
@@ -96,6 +98,7 @@ NAME_INDEX.sort(
 # -------------------------------------------------------------------
 # Candidate resolution: multi-game, scored, collection-aware
 # -------------------------------------------------------------------
+
 
 def resolve_game_candidates(
     text: str,
@@ -186,12 +189,11 @@ def resolve_game_candidates(
 # interpret_message using multi-game + scores + collection
 # -------------------------------------------------------------------
 
-def interpret_message(
-    user_id: str, text: str, context: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
+
+def interpret_message(user_id: str, text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Rules-based interpreter → QuerySpec.
-    
+
     If context contains 'selected_game_id', it will be used as base_game_id,
     bypassing NLU game resolution.
     """
@@ -218,9 +220,30 @@ def interpret_message(
           ...
         }
     """
-    text_l = text.lower()
+    text_l = text.lower().strip()
     ctx = context or {}
     user_collection_ids: List[Any] = ctx.get("user_collection_ids") or []
+
+    # Detect theme/mechanics preference responses
+    # Check if this is a response to the follow-up prompt
+    theme_preference = None
+    mechanics_preference = None
+    # Check for exact match first (most specific)
+    if text_l.strip() == "1" or text_l.strip() == "theme" or text_l.strip() == "the theme":
+        theme_preference = "theme"
+    elif text_l.strip() == "2" or text_l.strip() == "mechanics" or text_l.strip() == "the mechanics":
+        mechanics_preference = "mechanics"
+    # Then check for partial matches
+    elif any(word in text_l for word in ["theme", "prefer theme", "theme preference"]):
+        theme_preference = "theme"
+    elif any(word in text_l for word in ["mechanics", "prefer mechanics", "mechanics preference"]):
+        mechanics_preference = "mechanics"
+
+    # Store in context for use in chat endpoint
+    if theme_preference:
+        ctx["theme_preference"] = theme_preference
+    if mechanics_preference:
+        ctx["mechanics_preference"] = mechanics_preference
 
     query_spec: Dict[str, Any] = {
         "intent": "recommend_similar",
@@ -240,13 +263,17 @@ def interpret_message(
 
     # Priority: selected_game_id > candidates > last_game_id > fallback
     # But don't use fallback if we have features in context (allow feature-only search)
+    # For theme/mechanics preference responses, always use last_game_id if available
     has_features_in_context = (
-        (ctx.get("required_feature_values") and len(ctx.get("required_feature_values", {})) > 0) or
-        (ctx.get("player_chips") and len(ctx.get("player_chips", [])) > 0) or
-        (ctx.get("playtime_chips") and len(ctx.get("playtime_chips", [])) > 0)
+        (ctx.get("required_feature_values") and len(ctx.get("required_feature_values", {})) > 0)
+        or (ctx.get("player_chips") and len(ctx.get("player_chips", [])) > 0)
+        or (ctx.get("playtime_chips") and len(ctx.get("playtime_chips", [])) > 0)
     )
-    
-    if selected_game_id:
+
+    # If this is a theme/mechanics preference response, prioritize last_game_id
+    if (theme_preference or mechanics_preference) and last_game_id:
+        base_game_id = last_game_id
+    elif selected_game_id:
         base_game_id = selected_game_id
     elif candidates and not has_features_in_context:
         # Only use candidates if we don't have features in context
@@ -267,7 +294,7 @@ def interpret_message(
         query_spec["intent"] = "collection_recommendation"
         query_spec["base_game_id"] = candidates[0]["game_id"]
         return query_spec
-    
+
     # If at least two games & language suggests comparison → compare_pair
     if len(candidates) >= 2 and "compare" in text_l:
         query_spec["intent"] = "compare_pair"
@@ -286,17 +313,17 @@ def interpret_message(
     elif "my collection" in text_l or "in my collection" in text_l:
         query_spec["scope"] = "user_collection"
         logger.debug(f"Setting scope to user_collection from text")
-    
+
     # Pass through excluded_feature_values from context
     if context and context.get("excluded_feature_values"):
         query_spec["excluded_feature_values"] = context["excluded_feature_values"]
         logger.debug(f"Setting excluded_feature_values from context: {context['excluded_feature_values']}")
-    
+
     # Pass through required_feature_values from context
     if context and context.get("required_feature_values"):
         query_spec["required_feature_values"] = context["required_feature_values"]
         logger.debug(f"Setting required_feature_values from context: {context['required_feature_values']}")
-    
+
     # Pass through use_rarity_weighting from context if set
     if context and context.get("use_rarity_weighting") is not None:
         query_spec["use_rarity_weighting"] = context["use_rarity_weighting"]
@@ -327,18 +354,18 @@ def interpret_message(
             player_count = int(player_match.group(1))
             cons.setdefault("players", {})["exact"] = player_count
             cons.setdefault("players", {})["use_recommended"] = True
-        
+
         # Handle player range (e.g., "2-4 players", "2 to 4 players")
         player_range_match = re.search(r"(\d+)\s*[-to]\s*(\d+)\s*player", text_l)
         if player_range_match:
             min_players = int(player_range_match.group(1))
             max_players = int(player_range_match.group(2))
             cons.setdefault("players", {})["min_overlap"] = 1  # At least 1 player overlap
-        
+
         # Handle "same player count" or "similar player count"
         if "same player" in text_l or "similar player" in text_l:
             cons.setdefault("players", {})["similar_best"] = True
-    
+
     # Handle playtime constraints from context chips (priority) or text
     playtime_chips = ctx.get("playtime_chips", [])
     if playtime_chips and len(playtime_chips) > 0:
@@ -355,7 +382,7 @@ def interpret_message(
                 value = value * 60
             cons.setdefault("playtime", {})["target"] = value
             cons.setdefault("playtime", {})["tolerance"] = 0.3
-    
+
     # Handle "different" / "dissimilar" logic
     if "different" in text_l or "dissimilar" in text_l or "not" in text_l:
         if "mechanic" in text_l or "mechanism" in text_l:

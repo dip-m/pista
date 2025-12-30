@@ -121,6 +121,7 @@ class ChatResponse(BaseModel):
     thread_id: Optional[int] = None
     ab_responses: Optional[List[Dict[str, Any]]] = None
     clickable_entities: Optional[List[ClickableEntity]] = None  # Entities that can be clicked in reply_text
+    followup_prompt: Optional[str] = None  # Follow-up prompt for theme/mechanics preference
 
 
 class UsernameUpdateRequest(BaseModel):
@@ -1661,6 +1662,12 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
             excluded_feature_values = {
                 k: set(v) if isinstance(v, list) else {v} if v else set() for k, v in excluded_feature_values.items()
             }
+            logger.info(f"EXCLUDED FEATURE VALUES: {[(k, len(v)) for k, v in excluded_feature_values.items()]}")
+            # Log first few families for debugging
+            if "families" in excluded_feature_values:
+                families_list = list(excluded_feature_values["families"])
+                logger.info(f"EXCLUDED FAMILIES (first 5): {families_list[:5]}")
+                logger.info(f"EXCLUDED FAMILIES (all): {families_list}")
 
         # Get required feature values from query_spec (set by user clicking chips to require features)
         required_feature_values = query_spec.get("required_feature_values")
@@ -1673,8 +1680,62 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
         else:
             required_feature_values = None
 
+        # Detect if this is a "game + chips" query (game with other filters)
+        # This triggers category-weighted similarity and follow-up prompt
+        player_chips = context.get("player_chips", [])
+        playtime_chips = context.get("playtime_chips", [])
+        has_other_chips = (
+            (player_chips and len(player_chips) > 0)
+            or (playtime_chips and len(playtime_chips) > 0)
+            or (required_feature_values and len(required_feature_values) > 0)
+        )
+        is_game_plus_chips = base_game_id is not None and has_other_chips
+        # For follow-up prompt, show on any game search (not just game + chips)
+        is_game_search = base_game_id is not None
+
+        # Check if this is a follow-up response (theme/mechanics preference)
+        # Check context first (from frontend), then check if message is "1" or "2"
+        theme_preference = context.get("theme_preference")
+        mechanics_preference = context.get("mechanics_preference")
+
+        # Also check message directly if not in context (fallback)
+        # Look for "1" or "2" at the end of the message (e.g., "Carcassonne 1" or just "1")
+        message_lower = message.lower().strip()
+        if not theme_preference and not mechanics_preference:
+            # Check for "with similar theme" or "with similar mechanics" patterns first (most specific)
+            if "with similar theme" in message_lower or (
+                "similar theme" in message_lower and "mechanics" not in message_lower
+            ):
+                theme_preference = "theme"
+            elif "with similar mechanics" in message_lower or ("similar mechanics" in message_lower):
+                mechanics_preference = "mechanics"
+            # Then check if message ends with "1" or "2" (possibly with game name before it)
+            elif message_lower.endswith(" 1") or message_lower == "1":
+                theme_preference = "theme"
+            elif message_lower.endswith(" 2") or message_lower == "2":
+                mechanics_preference = "mechanics"
+            # Check for "1" or "2" as last word
+            else:
+                message_words = message_lower.split()
+                if message_words and message_words[-1] == "1":
+                    theme_preference = "theme"
+                elif message_words and message_words[-1] == "2":
+                    mechanics_preference = "mechanics"
+                # Finally check for generic "theme" or "mechanics" keywords (but not if "similar" is present, as that's handled above)
+                elif "theme" in message_lower and "mechanics" not in message_lower and "similar" not in message_lower:
+                    theme_preference = "theme"
+                elif "mechanics" in message_lower and "similar" not in message_lower:
+                    mechanics_preference = "mechanics"
+
+        is_followup_response = theme_preference is not None or mechanics_preference is not None
+
+        # Determine weighting mode
+        category_weight_only = is_game_plus_chips and not is_followup_response
+        theme_only = is_followup_response and (theme_preference == "theme" or mechanics_preference == "theme")
+        mechanics_only = is_followup_response and (theme_preference == "mechanics" or mechanics_preference == "mechanics")
+
         logger.info(
-            f"Search params: base_game_id={base_game_id}, include_features={include_features}, exclude_features={exclude_features}, constraints={constraints}, use_rarity_weighting={use_rarity_weighting}, excluded_feature_values={excluded_feature_values}, required_feature_values={required_feature_values}"
+            f"Search params: base_game_id={base_game_id}, include_features={include_features}, exclude_features={exclude_features}, constraints={constraints}, use_rarity_weighting={use_rarity_weighting}, excluded_feature_values={excluded_feature_values}, required_feature_values={required_feature_values}, category_weight_only={category_weight_only}, theme_only={theme_only}, mechanics_only={mechanics_only}"
         )
 
         try:
@@ -1702,8 +1763,66 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                     use_rarity_weighting=use_rarity_weighting,
                     excluded_feature_values=excluded_feature_values,
                     required_feature_values=required_feature_values,
+                    category_weight_only=category_weight_only,
+                    theme_only=theme_only,
+                    mechanics_only=mechanics_only,
+                    mechanics_weight=0.5,
+                    categories_weight=0.5,
                 )
             logger.debug(f"Found {len(results)} results for game_id={base_game_id}, scope={scope}")
+
+            # If no results found, check if it's due to excluded families filtering out all top_k results
+            # In this case, retry with larger top_k to get more candidates
+            # This handles cases like Carcassonne where all top results have the same family
+            if not results and excluded_feature_values and "families" in excluded_feature_values:
+                excluded_families_list = list(excluded_feature_values.get("families", set()))
+                try:
+                    results = ENGINE.search_similar(
+                        game_id=base_game_id,
+                        top_k=20,  # Increase to 20
+                        include_self=False,
+                        constraints=constraints,
+                        allowed_ids=allowed_ids,
+                        explain=True,
+                        include_features=include_features,
+                        exclude_features=exclude_features,
+                        use_rarity_weighting=use_rarity_weighting,
+                        excluded_feature_values=excluded_feature_values,
+                        required_feature_values=required_feature_values,
+                        category_weight_only=category_weight_only,
+                        theme_only=theme_only,
+                        mechanics_only=mechanics_only,
+                        mechanics_weight=0.5,
+                        categories_weight=0.5,
+                    )
+                    results = results[:top_k] if results else []
+                except Exception as retry_err:
+                    logger.error(f"Error in retry with top_k=20: {retry_err}", exc_info=True)
+
+                # If still no results, try with top_k=50
+                if not results:
+                    try:
+                        results = ENGINE.search_similar(
+                            game_id=base_game_id,
+                            top_k=50,  # Increase to 50
+                            include_self=False,
+                            constraints=constraints,
+                            allowed_ids=allowed_ids,
+                            explain=True,
+                            include_features=include_features,
+                            exclude_features=exclude_features,
+                            use_rarity_weighting=use_rarity_weighting,
+                            excluded_feature_values=excluded_feature_values,
+                            required_feature_values=required_feature_values,
+                            category_weight_only=category_weight_only,
+                            theme_only=theme_only,
+                            mechanics_only=mechanics_only,
+                            mechanics_weight=0.5,
+                            categories_weight=0.5,
+                        )
+                        results = results[:top_k] if results else []
+                    except Exception as retry_err:
+                        logger.error(f"Error in retry with top_k=50: {retry_err}", exc_info=True)
 
             # If no results found, try with loosened constraints and features
             if not results:
@@ -1725,6 +1844,11 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                             use_rarity_weighting=use_rarity_weighting,
                             excluded_feature_values=excluded_feature_values,
                             required_feature_values=required_feature_values,  # Keep required features!
+                            category_weight_only=category_weight_only,
+                            theme_only=theme_only,
+                            mechanics_only=mechanics_only,
+                            mechanics_weight=0.5,
+                            categories_weight=0.5,
                         )
                         results = results[:top_k] if results else []
                         logger.debug(f"Found {len(results)} results in global scope")
@@ -1732,8 +1856,9 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                         logger.error(f"Error in global scope search: {search_err}", exc_info=True)
 
                 # If still no results, try without constraints and features
+                # BUT keep excluded_feature_values (excluded families) to maintain "exclude same series" functionality
                 if not results:
-                    logger.debug("Retrying without constraints and features")
+                    logger.debug("Retrying without constraints and features (but keeping excluded families)")
                     try:
                         results = ENGINE.search_similar(
                             game_id=base_game_id,
@@ -1745,10 +1870,12 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                             include_features=None,
                             exclude_features=None,
                             use_rarity_weighting=use_rarity_weighting,
-                            excluded_feature_values=excluded_feature_values,
+                            excluded_feature_values=excluded_feature_values,  # Keep excluded families!
+                            mechanics_weight=0.5,
+                            categories_weight=0.5,
                         )
                         results = results[:top_k] if results else []
-                        logger.debug(f"Found {len(results)} results without constraints/features")
+                        logger.debug(f"Found {len(results)} results without constraints/features (excluded families kept)")
                     except Exception as search_err:
                         logger.error(f"Error in unconstrained search: {search_err}", exc_info=True)
 
@@ -1768,6 +1895,11 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
                             include_features=None,
                             exclude_features=None,
                             required_feature_values=required_feature_values,  # Keep required features!
+                            category_weight_only=category_weight_only,
+                            theme_only=theme_only,
+                            mechanics_only=mechanics_only,
+                            mechanics_weight=0.5,
+                            categories_weight=0.5,
                         )
                         logger.debug(f"Found {len(results)} results with embedding-only search")
                     except Exception as search_err:
@@ -1789,6 +1921,32 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
             scope_notice = ""
             if scope_changed:
                 scope_notice = " No similar games found in your collection, so I'm showing results from the global database."
+
+            # Add follow-up prompt for game + chips queries (not follow-up responses)
+            # Only show on user queries (not system prompts), and only 1 out of 5 responses
+            followup_prompt = ""
+            should_show_prompt = False
+            # Check if this is a user query (not a system-generated prompt)
+            message_lower = message.lower()
+            is_user_query = not (
+                message_lower.startswith("do you prefer")
+                or message_lower.startswith("great!")
+                or message_lower.startswith("let's explore")
+            )
+            # Get response count from context (increment on each similarity search response)
+            response_count = context.get("similarity_response_count", 0)
+            context["similarity_response_count"] = response_count + 1
+
+            # Show prompt on every game search (not just the first one for each game)
+            # Show prompt if:
+            # 1. It's a user query (not system prompt)
+            # 2. It's a game search
+            # 3. It's not a follow-up response (theme/mechanics selection)
+            # 4. We have results
+            should_show_prompt = is_user_query and is_game_search and not is_followup_response and results and len(results) > 0
+
+            if should_show_prompt:
+                followup_prompt = "Do you prefer 1) the theme, or 2) the mechanics?"
 
             reply_text = (
                 f"Here are some games that feel close to your base game "
@@ -2089,6 +2247,11 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
     # Extract clickable entities from reply_text and results
     clickable_entities = extract_clickable_entities(reply_text, results) if results else []
 
+    # Extract followup_prompt if it was set
+    followup_prompt_value = None
+    if should_show_prompt and followup_prompt:
+        followup_prompt_value = followup_prompt.strip()
+
     return ChatResponse(
         reply_text=reply_text,
         results=results,
@@ -2096,6 +2259,7 @@ def chat(req: ChatRequest, current_user: Optional[Dict[str, Any]] = Depends(get_
         thread_id=thread_id if current_user else None,
         ab_responses=ab_responses,
         clickable_entities=clickable_entities,
+        followup_prompt=followup_prompt_value,
     )
 
 
@@ -2673,6 +2837,70 @@ def get_game_features_endpoint(game_id: int, current_user: Optional[Dict[str, An
     except Exception as e:
         logger.error(f"Error getting game features: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get game features: {str(e)}")
+
+
+@app.get("/games/{game_id}/families")
+def get_game_families_endpoint(game_id: int, current_user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    """Get families (series) for a game. Public endpoint."""
+    conn = get_db_connection()
+    try:
+        # Get families for the game
+        query = """SELECT f.name
+                   FROM families f
+                   JOIN game_families gf ON gf.family_id = f.id
+                   WHERE gf.game_id = %s
+                   ORDER BY f.name"""
+        cur = execute_query(conn, query, (game_id,))
+        families = [row[0] for row in cur.fetchall() if row[0] is not None and row[0].strip()]
+
+        return {"game_id": game_id, "families": families}
+    except Exception as e:
+        logger.error(f"Error getting game families: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get game families: {str(e)}")
+    finally:
+        put_connection(conn)
+
+
+@app.get("/games/{game_id}/details")
+def get_game_details_endpoint(game_id: int, current_user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    """Get game details including description, features, etc. Public endpoint."""
+    conn = get_db_connection()
+    try:
+        # Get game basic info
+        query = """SELECT name, year_published, thumbnail, average_rating, num_ratings,
+                          min_players, max_players, description
+                   FROM games WHERE id = %s"""
+        cur = execute_query(conn, query, (game_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Game not found")
+
+        game_data = {
+            "id": game_id,
+            "name": row[0],
+            "year_published": row[1],
+            "thumbnail": row[2],
+            "average_rating": float(row[3]) if row[3] else None,
+            "num_ratings": int(row[4]) if row[4] else 0,
+            "min_players": int(row[5]) if row[5] else None,
+            "max_players": int(row[6]) if row[6] else None,
+            "description": row[7],
+        }
+
+        # Get features (only categories and mechanics for detail view)
+        features = get_game_features(conn, game_id)
+        game_data["categories"] = list(features.get("categories", set()))
+        game_data["mechanics"] = list(features.get("mechanics", set()))
+        game_data["families"] = list(features.get("families", set()))  # For "More" button
+
+        return game_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting game details: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get game details: {str(e)}")
+    finally:
+        put_connection(conn)
 
 
 @app.post("/games/{game_id}/features/modify")

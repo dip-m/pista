@@ -117,6 +117,11 @@ class SimilarityEngine:
         use_rarity_weighting: bool = False,
         excluded_feature_values: Optional[Dict[str, Set[str]]] = None,
         required_feature_values: Optional[Dict[str, Set[str]]] = None,
+        category_weight_only: bool = False,
+        theme_only: bool = False,
+        mechanics_only: bool = False,
+        mechanics_weight: float = 0.5,
+        categories_weight: float = 0.5,
     ) -> List[Dict[str, Any]]:
         """
         constraints: generic constraint spec (see section 2).
@@ -146,40 +151,62 @@ class SimilarityEngine:
                 logger.debug(f"Using direct collection search for {len(allowed_ids)} games")
 
             if use_direct_collection_search:
-                # Get embeddings for all games in collection
-                collection_ids = list(allowed_ids)
-                collection_embeddings = []
-                valid_collection_ids = []
-                for gid in collection_ids:
-                    if gid == game_id and not include_self:
-                        continue
+                # Get embeddings for all games in collection - optimized batch fetch
+                collection_ids = [gid for gid in allowed_ids if include_self or gid != game_id]
+
+                if collection_ids:
+                    # Batch fetch all embeddings in a single query
                     try:
-                        vec = self._fetch_embedding(gid)
-                        collection_embeddings.append(vec)
-                        valid_collection_ids.append(gid)
-                    except Exception:
-                        continue
+                        placeholders = ",".join(["%s"] * len(collection_ids))
+                        query = f"SELECT game_id, vector_json FROM game_embeddings WHERE game_id IN ({placeholders})"
+                        cur = execute_query(self.conn, query, tuple(collection_ids))
+                        rows = cur.fetchall()
 
-                if collection_embeddings:
-                    # Compute cosine similarity for all games in collection
-                    collection_matrix = np.vstack(collection_embeddings)
-                    faiss.normalize_L2(collection_matrix)
-                    similarities = np.dot(collection_matrix, query_vec.T).flatten()
+                        collection_embeddings = []
+                        valid_collection_ids = []
+                        for row in rows:
+                            gid, vec_json = row
+                            try:
+                                vec = np.array(json.loads(vec_json), dtype="float32")
+                                collection_embeddings.append(vec)
+                                valid_collection_ids.append(gid)
+                            except (json.JSONDecodeError, ValueError) as e:
+                                logger.warning(f"Error parsing embedding for game_id={gid}: {e}")
+                                continue
 
-                    # Sort by similarity descending
-                    sorted_indices = np.argsort(similarities)[::-1]
-                    sims = similarities[sorted_indices]
-                    idxs = [valid_collection_ids[i] for i in sorted_indices]
+                        if collection_embeddings:
+                            # Compute cosine similarity for all games in collection
+                            collection_matrix = np.vstack(collection_embeddings)
+                            faiss.normalize_L2(collection_matrix)
+                            similarities = np.dot(collection_matrix, query_vec.T).flatten()
+
+                            # Sort by similarity descending
+                            sorted_indices = np.argsort(similarities)[::-1]
+                            sims = similarities[sorted_indices]
+                            idxs = [valid_collection_ids[i] for i in sorted_indices]
+                        else:
+                            sims = np.array([])
+                            idxs = []
+                    except Exception as e:
+                        logger.error(f"Error batch fetching collection embeddings: {e}", exc_info=True)
+                        # Fallback to empty results
+                        sims = np.array([])
+                        idxs = []
                 else:
                     sims = np.array([])
                     idxs = []
             else:
                 # search 2n matches to allow for reordering by weighted criteria
                 # When searching in collection, search more candidates since filtering is strict
+                # When excluding families, search even more to account for filtered results
                 n_search = top_k * 2  # Default: Find 2n matches for reordering
                 if allowed_ids is not None and len(allowed_ids) > 0:
                     # Search more candidates when filtering by collection to increase chance of finding matches
                     n_search = min(top_k * 10, len(self.id_map))  # Increased from 4x to 10x
+                if excluded_feature_values and "families" in excluded_feature_values:
+                    # When excluding families, search even more candidates to account for filtered results
+                    n_search = max(n_search, top_k * 10)  # At least 10x top_k
+                    n_search = min(n_search, len(self.id_map))  # But not more than available games
                 sims, idxs = self.index.search(query_vec, n_search)
                 sims = sims[0]
                 idxs = idxs[0]
@@ -226,6 +253,7 @@ class SimilarityEngine:
             "not_in_allowed": 0,
             "failed_explain": 0,
             "required_features": 0,
+            "excluded_features": 0,
         }
 
         for sim, gid_or_ix in zip(sims, idxs):
@@ -260,21 +288,47 @@ class SimilarityEngine:
             try:
                 # Ensure connection is healthy before querying
                 self._ensure_connection()
-                cur = execute_query(
-                    self.conn,
-                    "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = %s",
-                    (gid,),
-                )
+                # Try to select avg_weight, but handle case where column might not exist
+                try:
+                    cur = execute_query(
+                        self.conn,
+                        "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description, avg_weight FROM games WHERE id = %s",
+                        (gid,),
+                    )
+                except psycopg2.Error as col_err:
+                    # If avg_weight column doesn't exist, fall back to query without it
+                    if "column" in str(col_err).lower() and "avg_weight" in str(col_err).lower():
+                        logger.debug(f"avg_weight column not found, using query without it for game {gid}")
+                        cur = execute_query(
+                            self.conn,
+                            "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = %s",
+                            (gid,),
+                        )
+                    else:
+                        raise
             except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
                 # Connection error - try once more with a fresh connection
                 logger.warning(f"Connection error fetching game {gid}, retrying: {e}")
                 self._ensure_connection()
                 try:
-                    cur = execute_query(
-                        self.conn,
-                        "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = %s",
-                        (gid,),
-                    )
+                    # Try to select avg_weight, but handle case where column might not exist
+                    try:
+                        cur = execute_query(
+                            self.conn,
+                            "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description, avg_weight FROM games WHERE id = %s",
+                            (gid,),
+                        )
+                    except psycopg2.Error as col_err:
+                        # If avg_weight column doesn't exist, fall back to query without it
+                        if "column" in str(col_err).lower() and "avg_weight" in str(col_err).lower():
+                            logger.debug(f"avg_weight column not found in retry, using query without it for game {gid}")
+                            cur = execute_query(
+                                self.conn,
+                                "SELECT name, thumbnail, average_rating, num_ratings, ranks_json, year_published, polls_json, min_players, max_players, description FROM games WHERE id = %s",
+                                (gid,),
+                            )
+                        else:
+                            raise
                 except Exception as retry_e:
                     logger.warning(f"SQL error fetching game {gid} after retry: {retry_e}")
                     filtered_out["failed_explain"] += 1
@@ -284,16 +338,36 @@ class SimilarityEngine:
                 filtered_out["failed_explain"] += 1
                 continue
             game_row = cur.fetchone()
-            game_name = game_row[0] if game_row else self._fetch_name(gid)
-            thumbnail = game_row[1] if game_row and game_row[1] else None
-            average_rating = float(game_row[2]) if game_row and game_row[2] is not None else None
-            num_ratings = int(game_row[3]) if game_row and game_row[3] is not None else 0
-            ranks_json_str = game_row[4] if game_row and game_row[4] else None
-            year_published = int(game_row[5]) if game_row and game_row[5] is not None else None
-            polls_json_str = game_row[6] if game_row and game_row[6] else None
-            min_players = int(game_row[7]) if game_row and game_row[7] is not None else None
-            max_players = int(game_row[8]) if game_row and game_row[8] is not None else None
-            description = game_row[9] if game_row and game_row[9] else None
+            if not game_row:
+                filtered_out["failed_explain"] += 1
+                continue
+
+            # Safely access columns with proper bounds checking
+            # Expected columns: name(0), thumbnail(1), average_rating(2), num_ratings(3), ranks_json(4),
+            # year_published(5), polls_json(6), min_players(7), max_players(8), description(9), avg_weight(10)
+            row_len = len(game_row)
+            if row_len < 10:
+                logger.warning(f"Game {gid} row has only {row_len} columns, expected at least 10. Skipping.")
+                filtered_out["failed_explain"] += 1
+                continue
+
+            try:
+                game_name = game_row[0] if game_row[0] else self._fetch_name(gid)
+                thumbnail = game_row[1] if row_len > 1 and game_row[1] else None
+                average_rating = float(game_row[2]) if row_len > 2 and game_row[2] is not None else None
+                num_ratings = int(game_row[3]) if row_len > 3 and game_row[3] is not None else 0
+                ranks_json_str = game_row[4] if row_len > 4 and game_row[4] else None
+                year_published = int(game_row[5]) if row_len > 5 and game_row[5] is not None else None
+                polls_json_str = game_row[6] if row_len > 6 and game_row[6] else None
+                min_players = int(game_row[7]) if row_len > 7 and game_row[7] is not None else None
+                max_players = int(game_row[8]) if row_len > 8 and game_row[8] is not None else None
+                description = game_row[9] if row_len > 9 and game_row[9] else None
+                # avg_weight is optional (column 10), may not exist in all databases
+                avg_weight = float(game_row[10]) if row_len > 10 and game_row[10] is not None else None
+            except (IndexError, ValueError, TypeError) as e:
+                logger.warning(f"Error parsing game row for game {gid}: {e}, row length: {row_len}")
+                filtered_out["failed_explain"] += 1
+                continue
 
             # Get designers for this game
             designers = []
@@ -421,6 +495,7 @@ class SimilarityEngine:
                 "designers": designers,
                 "embedding_similarity": float(sim) if sim is not None else 0.0,
                 "language_dependence": language_dependence,
+                "avg_weight": avg_weight,
             }
 
             # Check required feature values EARLY (before computing similarity)
@@ -476,21 +551,86 @@ class SimilarityEngine:
                     filtered_out["required_features"] = filtered_out.get("required_features", 0) + 1
                     continue
 
+            # Check excluded feature values EARLY (before computing similarity)
+            # If a game has any excluded families, skip it entirely
+            if excluded_feature_values:
+                # Reuse other_features_check if we already fetched it for required features
+                if required_feature_values and other_features_check:
+                    other_features_exclude_check = other_features_check
+                else:
+                    try:
+                        self._ensure_connection()
+                        other_features_exclude_check = get_game_features(self.conn, gid)
+                    except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+                        # Connection error - try once more
+                        logger.warning(f"Connection error getting features for game_id={gid} (exclude check), retrying: {e}")
+                        self._ensure_connection()
+                        try:
+                            other_features_exclude_check = get_game_features(self.conn, gid)
+                        except Exception as retry_e:
+                            logger.warning(f"Error getting features for game_id={gid} after retry (exclude check): {retry_e}")
+                            continue
+                    except (ValueError, psycopg2.Error) as e:
+                        logger.warning(f"Error getting features for game_id={gid} to check excluded features: {e}")
+                        continue
+
+                should_exclude = False
+                for feature_type, excluded_values in excluded_feature_values.items():
+                    feature_key = feature_type
+                    if feature_key in other_features_exclude_check:
+                        feature_set = (
+                            other_features_exclude_check[feature_key]
+                            if isinstance(other_features_exclude_check[feature_key], set)
+                            else set(other_features_exclude_check[feature_key])
+                        )
+                        # Normalize feature names for case-insensitive comparison
+                        feature_set_normalized = {f.lower().strip() for f in feature_set if f is not None}
+                        excluded_values_normalized = {v.lower().strip() for v in excluded_values if v is not None}
+
+                        # Log first game for debugging
+                        if filtered_out.get("excluded_features", 0) == 0 and filtered_out.get("total_checked", 0) == 0:
+                            logger.info(
+                                f"DEBUG: First game check - gid={gid}, name={other_features_exclude_check.get('name', 'unknown')}, feature_type={feature_type}, excluded_values={list(excluded_values_normalized)}, game_families={list(feature_set_normalized)[:5]}"
+                            )
+                            filtered_out["total_checked"] = filtered_out.get("total_checked", 0) + 1
+
+                        # Check if game has ANY excluded values - if so, skip it
+                        overlap = excluded_values_normalized & feature_set_normalized
+                        if overlap:
+                            logger.info(
+                                f"EXCLUDING game {gid} ({other_features_exclude_check.get('name', 'unknown')}) - has excluded {feature_type} values: {list(overlap)[:3]}... (total excluded: {len(excluded_values_normalized)}, game has: {len(feature_set_normalized)})"
+                            )
+                            should_exclude = True
+                            break
+                        else:
+                            # Log first few games that pass to understand what's happening
+                            if filtered_out.get("excluded_features", 0) < 3:
+                                logger.info(
+                                    f"PASSING game {gid} ({other_features_exclude_check.get('name', 'unknown')}) - no overlap with excluded {feature_type}. Excluded: {list(excluded_values_normalized)}, Game has: {list(feature_set_normalized)[:5]}"
+                                )
+
+                if should_exclude:
+                    filtered_out["excluded_features"] = filtered_out.get("excluded_features", 0) + 1
+                    continue
+
             if explain and base_features:
                 try:
                     self._ensure_connection()
                     other_features = get_game_features(self.conn, gid)
 
-                    # Apply excluded feature values if provided (remove from consideration)
-                    if excluded_feature_values:
-                        for feature_type, excluded_values in excluded_feature_values.items():
-                            if feature_type in other_features:
-                                # Remove excluded values from other_features
-                                if isinstance(other_features[feature_type], set):
-                                    other_features[feature_type] = other_features[feature_type] - excluded_values
+                    # Note: We don't remove excluded values from other_features anymore
+                    # because we've already filtered out games with excluded families above
 
                     meta_score, overlaps, scores = compute_meta_similarity(
-                        base_features, other_features, conn=self.conn, use_rarity_weighting=use_rarity_weighting
+                        base_features,
+                        other_features,
+                        conn=self.conn,
+                        use_rarity_weighting=use_rarity_weighting,
+                        category_weight_only=category_weight_only,
+                        theme_only=theme_only,
+                        mechanics_only=mechanics_only,
+                        mechanics_weight=mechanics_weight,
+                        categories_weight=categories_weight,
                     )
 
                     # Check include/exclude features
@@ -575,10 +715,26 @@ class SimilarityEngine:
             results.append(record)
             # Don't break early - collect all 2n matches for reordering
 
-        # Reorder by weighted criteria: similarity score + num_ratings + rank + years since publish
+        # Reorder by weighted criteria: similarity score + num_ratings + rank + years since publish + complexity
         import time
 
         current_year = time.localtime().tm_year
+
+        # Get base game complexity for comparison
+        base_complexity = None
+        if base_features:
+            try:
+                self._ensure_connection()
+                cur = execute_query(
+                    self.conn,
+                    "SELECT avg_weight FROM games WHERE id = %s",
+                    (game_id,),
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    base_complexity = float(row[0])
+            except Exception:
+                pass
 
         def calculate_weighted_score(record):
             base_score = record.get("final_score", record.get("embedding_similarity", 0.0))
@@ -603,7 +759,15 @@ class SimilarityEngine:
                 # Games from last 5 years get full boost, older games get less
                 year_weight = 0.05 * max(0.0, 1.0 - (years_ago / 20.0))
 
-            return base_score + ratings_weight + rank_weight + year_weight
+            # complexity (avg_weight): prefer similar complexity, max weight 0.05
+            complexity_weight = 0.0
+            avg_weight = record.get("avg_weight")
+            if avg_weight is not None and base_complexity is not None:
+                complexity_diff = abs(avg_weight - base_complexity)
+                # Normalize: difference of 0 = 1.0, difference of 5.0 = 0.0
+                complexity_weight = 0.05 * max(0.0, 1.0 - (complexity_diff / 5.0))
+
+            return base_score + ratings_weight + rank_weight + year_weight + complexity_weight
 
         # Sort by weighted score
         try:
@@ -614,6 +778,19 @@ class SimilarityEngine:
             results.sort(key=lambda r: r.get("embedding_similarity", 0.0), reverse=True)
 
         # Return top_k after reordering
+        # Log filtering summary
+        if len(results) == 0 and total_candidates > 0:
+            logger.warning(f"NO RESULTS after filtering! total_candidates: {total_candidates}, filtered_out: {filtered_out}")
+            # Log more details about excluded features
+            if excluded_feature_values:
+                logger.warning(f"DEBUG: Excluded feature values: {excluded_feature_values}")
+                if "families" in excluded_feature_values:
+                    logger.warning(
+                        f"DEBUG: Excluded families count: {len(excluded_feature_values['families'])}, families: {list(excluded_feature_values['families'])[:5]}"
+                    )
+        elif filtered_out.get("excluded_features", 0) > 0:
+            logger.info(f"Filtering summary: {filtered_out}, total_candidates: {total_candidates}, results: {len(results)}")
+
         return results[:top_k]
 
     def _satisfies_player_constraints(

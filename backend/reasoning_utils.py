@@ -245,7 +245,15 @@ def get_feature_rarity_weights(conn, feature_type: str) -> Dict[str, float]:
 
 
 def compute_meta_similarity(
-    f1: Dict[str, object], f2: Dict[str, object], conn: Optional[Any] = None, use_rarity_weighting: bool = False
+    f1: Dict[str, object],
+    f2: Dict[str, object],
+    conn: Optional[Any] = None,
+    use_rarity_weighting: bool = False,
+    category_weight_only: bool = False,
+    theme_only: bool = False,
+    mechanics_only: bool = False,
+    mechanics_weight: float = 0.5,
+    categories_weight: float = 0.5,
 ) -> Tuple[float, Dict[str, List[str]], Dict[str, float]]:
     mech1, mech2 = f1["mechanics"], f2["mechanics"]
     cat1, cat2 = f1["categories"], f2["categories"]
@@ -254,18 +262,9 @@ def compute_meta_similarity(
     art1, art2 = f1["artists"], f2["artists"]
     pub1, pub2 = f1["publishers"], f2["publishers"]
 
-    # Filter out non-gameplay categories that shouldn't affect similarity
-    # These are implementation/publishing categories, not gameplay features
-    excluded_categories = {
-        "Digital Implementation",
-        "Crowdfunding",
-        "Digital Game",
-        "App Implementation",
-        "Video Game Theme",
-        "Software",
-    }
-    cat1 = cat1 - excluded_categories
-    cat2 = cat2 - excluded_categories
+    # Note: Category exclusion is now handled via excluded_feature_values in the frontend
+    # Users can manually exclude categories via chips if desired
+    # No automatic filtering of categories here
 
     overlaps = {
         "shared_mechanics": sorted(mech1 & mech2),
@@ -286,17 +285,35 @@ def compute_meta_similarity(
     }
 
     # Base weights - mechanics and categories are separate equal-weighted buckets
-    # Mechanics bucket: 50% weight
-    # Categories bucket: 50% weight (categories + families + themes)
-    # Other features: minimal weight
-    mechanics_weight = 0.50
-    categories_weight = 0.50  # Categories, families, and theme-related features
-
-    # Distribute categories_weight across categories and families (themes)
-    categories_base_weight = 0.30  # Categories
-    families_weight = 0.15  # Families (themes)
-    # Remaining weight for other features
-    other_weight = 0.05
+    # Special weighting modes for user journey
+    if category_weight_only:
+        # When game + chips: only categories have weight, mechanics unweighted
+        mechanics_weight = 0.0
+        categories_weight = 1.0  # All weight to categories
+        categories_base_weight = 0.6  # Categories
+        families_weight = 0.4  # Families (themes)
+        other_weight = 0.0
+    elif theme_only:
+        # Theme preference: only theme (categories + families) match, mechanics unweighted
+        mechanics_weight = 0.0
+        categories_weight = 1.0
+        categories_base_weight = 0.6
+        families_weight = 0.4
+        other_weight = 0.0
+    elif mechanics_only:
+        # Mechanics preference: only mechanics match, categories unweighted
+        mechanics_weight = 1.0
+        categories_weight = 0.0
+        categories_base_weight = 0.0
+        families_weight = 0.0
+        other_weight = 0.0
+    else:
+        # Base-case: only categories and mechanics with configurable weights (default 0.5 each)
+        # All other features excluded from similarity calculation
+        # mechanics_weight and categories_weight are passed as parameters (default 0.5 each)
+        categories_base_weight = categories_weight  # Categories only (no families in base case)
+        families_weight = 0.0  # Families excluded in base case
+        other_weight = 0.0  # All other features excluded
 
     weights = {
         "mechanics": mechanics_weight,
@@ -345,11 +362,17 @@ def compute_meta_similarity(
                     f"Rarity weighting for categories bucket: avg_rarity={avg_rarity:.3f}, multiplier={categories_bucket_multiplier:.3f}"
                 )
 
-    # Calculate mechanics bucket score (50% weight) - apply rarity multiplier if enabled
+    # Calculate mechanics bucket score - apply rarity multiplier if enabled
     mechanics_bucket_score = scores["j_mechanics"] * mechanics_bucket_multiplier
 
-    # Calculate categories bucket score (50% weight) - average of categories and families, apply rarity multiplier
-    categories_bucket_score = ((scores["j_categories"] + scores["j_families"]) / 2.0) * categories_bucket_multiplier
+    # Calculate categories bucket score
+    # In base case (not theme_only/category_weight_only), only use categories (no families)
+    if theme_only or category_weight_only:
+        # Average of categories and families for theme-based searches
+        categories_bucket_score = ((scores["j_categories"] + scores["j_families"]) / 2.0) * categories_bucket_multiplier
+    else:
+        # Base case: only categories (families excluded)
+        categories_bucket_score = scores["j_categories"] * categories_bucket_multiplier
 
     # Normalize multipliers to keep scores in [0, 1] range
     # We'll apply normalization after combining buckets
@@ -358,8 +381,8 @@ def compute_meta_similarity(
         mechanics_bucket_score = mechanics_bucket_score / max_multiplier
         categories_bucket_score = categories_bucket_score / max_multiplier
 
-    # Final score: 50% mechanics + 50% categories bucket
-    meta_score = 0.50 * mechanics_bucket_score + 0.50 * categories_bucket_score
+    # Final score: use weights based on mode
+    meta_score = mechanics_weight * mechanics_bucket_score + categories_weight * categories_bucket_score
 
     return meta_score, overlaps, scores
 
