@@ -3104,29 +3104,8 @@ function TypingTiles({ results, onGameClick, onRequireFeature, messageIndex, var
 }
 
 function GameResultList({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand, querySpec, onAddToSearch }) {
-  // If expandedGames is passed as prop (for A/B tests), use it; otherwise create local state
-  const [localExpanded, setLocalExpanded] = useState(new Set());
-  const isExpanded = (gameId) => {
-    if (expandedGames !== undefined) {
-      return expandedGames.has(gameId);
-    }
-    return localExpanded.has(gameId);
-  };
-  const handleToggleExpand = (gameId) => {
-    if (toggleExpand) {
-      toggleExpand(gameId);
-    } else {
-      setLocalExpanded((prev) => {
-        const newSet = new Set(prev);
-        if (newSet.has(gameId)) {
-          newSet.delete(gameId);
-        } else {
-          newSet.add(gameId);
-        }
-        return newSet;
-      });
-    }
-  };
+  // Pass toggleExpand directly to TypingTiles (or use a no-op if not provided)
+  const handleToggleExpand = toggleExpand || (() => {});
 
   if (!results || results.length === 0) {
     return null;
@@ -3473,8 +3452,8 @@ function GameTile({ game: r, tileIdx, chipsToShow, onGameClick, onRequireFeature
   );
 }
 
-// eslint-disable-next-line no-unused-vars
 // Keep the original GameResultList for backward compatibility, but use TypingTiles
+// eslint-disable-next-line no-unused-vars
 function GameResultListOriginal({ results, onGameClick, onRequireFeature, messageIndex, variant, differences, expandedGames, toggleExpand, querySpec, onAddToSearch }) {
   // If expandedGames is passed as prop (for A/B tests), use it; otherwise create local state
   const [localExpanded, setLocalExpanded] = useState(new Set());
