@@ -4,6 +4,7 @@ import requests
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional
 from backend.logger_config import logger
+from backend.config import BEARER_TOKEN
 from functools import lru_cache
 import threading
 
@@ -12,10 +13,15 @@ BGG_RATE_LIMIT_DELAY = 1.0  # Minimum seconds between requests
 _last_request_time = 0
 _rate_limit_lock = threading.Lock()
 
-headers = {
-    "Authorization": f"Bearer f8b71467-0069-4536-a822-1f3dd0dd431c",
-    "Accept": "application/json",
-}
+
+def get_bgg_headers():
+    """Get BGG API headers with bearer token."""
+    headers = {
+        "Accept": "application/json",
+    }
+    if BEARER_TOKEN:
+        headers["Authorization"] = f"Bearer {BEARER_TOKEN}"
+    return headers
 
 
 def _rate_limit():
@@ -50,7 +56,7 @@ def fetch_user_collection(bgg_user_id: str) -> List[Dict[str, Any]]:
     for attempt in range(max_retries):
         try:
             _rate_limit()  # Enforce rate limiting
-            resp = requests.get(BGG_COLLECTION_URL, params=params, headers=headers, timeout=30)
+            resp = requests.get(BGG_COLLECTION_URL, params=params, headers=get_bgg_headers(), timeout=30)
 
             if resp.status_code == 202:
                 logger.debug(f"BGG request queued, waiting {retry_sleep}s (attempt {attempt + 1})")

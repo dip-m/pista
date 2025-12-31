@@ -3,8 +3,14 @@
   "appName": "Pista",
   "webDir": "build",
   "bundledWebRuntime": false,
+  "server": {
+    "hostname": "pistatabletop.netlify.app",
+    "androidAllowMixedContent": true
+  },
   "android": {
     "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true,
     "buildOptions": {
       "keystorePath": "",
       "keystorePassword": "",

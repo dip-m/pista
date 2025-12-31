@@ -79,23 +79,47 @@ export const authService = {
   },
 
   async oauthCallback(provider, token, email = null, name = null) {
-    const res = await httpRequest(`${API_BASE}/auth/oauth/callback`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        provider,
-        token,
-        email,
-        name
-      }),
-    });
-    if (!res.ok) {
-      const error = await res.json();
-      throw new Error(error.detail || "OAuth authentication failed");
+    const url = `${API_BASE}/auth/oauth/callback`;
+    console.log(`[Auth] Making OAuth callback request to: ${url}`, { provider });
+    try {
+      const res = await httpRequest(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider,
+          token,
+          email,
+          name
+        }),
+      });
+
+      if (!res.ok) {
+        let errorData;
+        try {
+          errorData = await res.json();
+        } catch (e) {
+          errorData = { detail: `HTTP ${res.status}: ${res.statusText}` };
+        }
+        throw new Error(errorData.detail || "OAuth authentication failed");
+      }
+
+      const data = await res.json();
+      this.setToken(data.access_token);
+      return data;
+    } catch (err) {
+      // Handle network errors (Failed to Fetch)
+      if (err.message === "Failed to fetch" || err.name === "TypeError" || err.message.includes("fetch")) {
+        console.error(`Network error connecting to backend at ${url}`);
+        console.error("Make sure the backend is running on", API_BASE);
+        throw new Error(
+          `Cannot connect to backend server at ${API_BASE}. ` +
+          `Please ensure the backend is running and accessible. ` +
+          `For local development, start the backend with: python -m uvicorn backend.main:app --reload`
+        );
+      }
+      // Re-throw other errors
+      throw err;
     }
-    const data = await res.json();
-    this.setToken(data.access_token);
-    return data;
   },
 
   async getCurrentUser() {

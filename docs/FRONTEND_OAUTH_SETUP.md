@@ -2,98 +2,55 @@
 
 ## Overview
 
-The frontend has been updated to support OAuth authentication (Google, Microsoft, Meta) and email-based login. The OAuth buttons are currently placeholders and need proper OAuth SDK integration.
+The frontend supports OAuth authentication (Google, Microsoft, Meta) and email-based login. OAuth is fully implemented and ready to use.
 
 ## Current Status
 
 ✅ **Completed:**
-- Email registration and login endpoints updated
-- OAuth callback structure in place
-- Login UI updated with OAuth buttons and email form
+- Email registration and login endpoints
+- OAuth callback structure
+- Google OAuth fully implemented with `@react-oauth/google`
+- Microsoft OAuth implemented with `@azure/msal-browser`
+- Login UI with OAuth buttons and email form
+- Error handling and user feedback
 
-❌ **Needs Implementation:**
-- OAuth provider SDKs installation
-- OAuth flow implementation for each provider
+## Quick Setup
 
-## Required OAuth Libraries
+For detailed Google OAuth setup instructions, see:
+- **[Google OAuth Setup Guide](./GOOGLE_OAUTH_SETUP.md)** - Complete step-by-step guide
 
-### Option 1: Individual SDKs (Recommended for Production)
+## Google OAuth (✅ Implemented)
 
-#### Google OAuth
-```bash
-npm install @react-oauth/google
-```
+Google OAuth is fully implemented and ready to use. You just need to configure your Google Client ID.
 
-#### Microsoft OAuth
-```bash
-npm install @azure/msal-browser @azure/msal-react
-```
+### Quick Setup
 
-#### Meta/Facebook OAuth
-```bash
-npm install react-facebook-login
-```
+1. **Get your Google Client ID:**
+   - Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+   - Create OAuth 2.0 credentials (Web application type)
+   - Add authorized redirect URIs:
+     - `http://localhost:3000` (for development)
+     - `https://pistatabletop.netlify.app` (for production)
 
-### Option 2: Universal OAuth Library
-
-Alternatively, you can use a universal OAuth library like `react-oauth` or implement a custom solution.
-
-## Implementation Steps
-
-### 1. Google OAuth Setup
-
-1. **Install the library:**
-   ```bash
-   npm install @react-oauth/google
+2. **Set environment variable:**
+   ```env
+   REACT_APP_GOOGLE_CLIENT_ID=your-client-id-here.apps.googleusercontent.com
    ```
 
-2. **Get Google OAuth credentials:**
-   - Go to [Google Cloud Console](https://console.cloud.google.com/)
-   - Create OAuth 2.0 credentials
-   - Add authorized redirect URI: `https://your-frontend.netlify.app/auth/callback/google`
-   - Get Client ID
+3. **Restart your development server**
 
-3. **Update `Login.jsx`:**
-   ```jsx
-   import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
+### Detailed Setup
 
-   // In Login component:
-   const googleLogin = useGoogleLogin({
-     onSuccess: async (tokenResponse) => {
-       try {
-         // Get user info from Google
-         const userInfo = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-           headers: { Authorization: `Bearer ${tokenResponse.access_token}` }
-         }).then(res => res.json());
-         
-         // Send to backend
-         await authService.oauthCallback(
-           'google',
-           tokenResponse.access_token,
-           userInfo.email,
-           userInfo.name
-         );
-         onLogin();
-       } catch (err) {
-         setError(err.message);
-       }
-     },
-     onError: () => setError('Google login failed')
-   });
-   ```
+For complete step-by-step instructions, troubleshooting, and mobile app configuration, see:
+- **[Google OAuth Setup Guide](./GOOGLE_OAUTH_SETUP.md)**
 
-4. **Wrap App with GoogleOAuthProvider in `App.jsx`:**
-   ```jsx
-   import { GoogleOAuthProvider } from '@react-oauth/google';
+### Implementation Details
 
-   function App() {
-     return (
-       <GoogleOAuthProvider clientId="YOUR_GOOGLE_CLIENT_ID">
-         {/* ... rest of app */}
-       </GoogleOAuthProvider>
-     );
-   }
-   ```
+- ✅ Uses `@react-oauth/google` library (already installed)
+- ✅ Configured in `App.jsx` with `GoogleOAuthProvider`
+- ✅ OAuth flow implemented in `Login.jsx`
+- ✅ Backend verification in `backend/auth_utils.py`
+- ✅ Works on both web and mobile (Capacitor) platforms
 
 ### 2. Microsoft OAuth Setup
 

@@ -6,6 +6,8 @@
     "@azure/msal-browser": "^4.27.0",
     "@azure/msal-react": "^3.0.23",
     "@capacitor/android": "^8.0.0",
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/browser": "^8.0.0",
     "@capacitor/cli": "^8.0.0",
     "@capacitor/core": "^8.0.0",
     "@capacitor/ios": "^8.0.0",

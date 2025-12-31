@@ -24,8 +24,7 @@ from backend.auth_utils import (
     create_access_token,
     decode_access_token,
     verify_google_token,
-    verify_microsoft_token,
-    verify_meta_token,
+    verify_bgg_username,
 )
 from backend.logger_config import logger
 from backend.bgg_collection import fetch_user_collection
@@ -133,8 +132,8 @@ class BggIdUpdateRequest(BaseModel):
 
 
 class OAuthCallbackRequest(BaseModel):
-    provider: str  # 'google', 'microsoft', 'meta'
-    token: str
+    provider: str  # 'google', 'bgg'
+    token: str  # OAuth token for Google, BGG username for BGG
     email: Optional[str] = None
     name: Optional[str] = None
 
@@ -212,7 +211,7 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
         # Verify user exists - use connection pool instead of global ENGINE_CONN
         conn = get_db_connection()
         try:
-            query = "SELECT id, email, username, bgg_id, is_admin FROM users WHERE id = %s"
+            query = "SELECT id, email, username, bgg_id, is_admin, oauth_provider FROM users WHERE id = %s"
             cur = execute_query(conn, query, (int(user_id),))
             user = cur.fetchone()
             if user is None:
@@ -225,6 +224,7 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
                 "username": user[2] if len(user) > 2 else None,
                 "bgg_id": user[3] if len(user) > 3 else None,
                 "is_admin": bool(user[4] if len(user) > 4 else False),
+                "oauth_provider": user[5] if len(user) > 5 else None,
             }
             return result
         finally:
@@ -509,28 +509,26 @@ def compare_two_games(engine: SimilarityEngine, game_a_id: Any, game_b_id: Any) 
 
 @app.post("/auth/oauth/callback")
 def oauth_callback(req: OAuthCallbackRequest):
-    """Handle OAuth callback from Google, Microsoft, or Meta."""
+    """Handle OAuth callback from Google or BGG."""
     # Get a fresh connection from the pool for this request
     conn = get_db_connection()
     try:
-        if req.provider not in ["google", "microsoft", "meta"]:
+        if req.provider not in ["google", "bgg"]:
             raise HTTPException(status_code=400, detail="Invalid OAuth provider")
 
         # Verify token and get user info
         user_info = None
         if req.provider == "google":
             user_info = verify_google_token(req.token)
-        elif req.provider == "microsoft":
-            user_info = verify_microsoft_token(req.token)
-        elif req.provider == "meta":
-            user_info = verify_meta_token(req.token)
+        elif req.provider == "bgg":
+            user_info = verify_bgg_username(req.token)  # token is actually BGG username
 
         if not user_info:
-            raise HTTPException(status_code=401, detail="Invalid OAuth token")
+            raise HTTPException(status_code=401, detail="Invalid OAuth token or BGG username not found")
 
         oauth_id = user_info.get("oauth_id")
         email = user_info.get("email") or req.email
-        # username = user_info.get("username") or req.name or email  # Unused for now
+        username = user_info.get("username")
 
         if not oauth_id:
             raise HTTPException(status_code=400, detail="OAuth ID not found")
@@ -546,6 +544,16 @@ def oauth_callback(req: OAuthCallbackRequest):
             is_admin = user[3] if len(user) > 3 else False
             if isinstance(is_admin, int):
                 is_admin = bool(is_admin)
+
+            # For BGG users, ensure bgg_id is set to their username
+            if req.provider == "bgg":
+                cur = execute_query(conn, "SELECT bgg_id FROM users WHERE id = %s", (user_id,))
+                existing_bgg_id = cur.fetchone()
+                if not existing_bgg_id or not existing_bgg_id[0]:
+                    # Set BGG ID if not already set
+                    update_query = "UPDATE users SET bgg_id = %s WHERE id = %s"
+                    execute_query(conn, update_query, (oauth_id, user_id))
+                    conn.commit()
         else:
             # New user - create account (username is NULL initially, user will set it in profile)
             is_new_user = True
@@ -554,9 +562,12 @@ def oauth_callback(req: OAuthCallbackRequest):
             cur = execute_query(conn, id_query)
             next_id = cur.fetchone()[0]
 
-            insert_query = """INSERT INTO users (id, email, username, oauth_provider, oauth_id)
-                             VALUES (%s, %s, %s, %s, %s) RETURNING id"""
-            cur = execute_query(conn, insert_query, (next_id, email, None, req.provider, oauth_id))
+            # For BGG, use the username as the username field and set bgg_id
+            user_username = username if req.provider == "bgg" else None
+            bgg_id_value = oauth_id if req.provider == "bgg" else None
+            insert_query = """INSERT INTO users (id, email, username, oauth_provider, oauth_id, bgg_id)
+                             VALUES (%s, %s, %s, %s, %s, %s) RETURNING id"""
+            cur = execute_query(conn, insert_query, (next_id, email, user_username, req.provider, oauth_id, bgg_id_value))
             user_id = cur.fetchone()[0]
             conn.commit()
             is_admin = False

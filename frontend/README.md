@@ -27,14 +27,26 @@ src/
 
 The app uses environment variables for configuration. Create a `.env` file in the root directory:
 
-```
+```env
 REACT_APP_API_BASE_URL=http://localhost:8000
+REACT_APP_GOOGLE_CLIENT_ID=your-google-client-id-here
 ```
 
 For production, set:
-```
+```env
 REACT_APP_API_BASE_URL=https://api.pista.com
+REACT_APP_GOOGLE_CLIENT_ID=your-google-client-id-here
 ```
+
+### OAuth Setup
+
+To enable Google OAuth login, see the complete setup guide:
+- **[Google OAuth Setup Guide](../docs/GOOGLE_OAUTH_SETUP.md)**
+
+Quick setup:
+1. Get your Google Client ID from [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Add it to your `.env` file as `REACT_APP_GOOGLE_CLIENT_ID`
+3. Configure redirect URIs in Google Console: `http://localhost:3000` and `https://pistatabletop.netlify.app`
 
 ## Development
 

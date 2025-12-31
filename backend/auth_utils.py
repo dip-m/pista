@@ -18,7 +18,9 @@ from backend.config import (
     GOOGLE_REDIRECT_URI,
     MICROSOFT_REDIRECT_URI,
     META_REDIRECT_URI,
+    BEARER_TOKEN,
 )
+from backend.logger_config import logger
 
 SECRET_KEY = JWT_SECRET_KEY
 ALGORITHM = JWT_ALGORITHM
@@ -97,17 +99,72 @@ def verify_microsoft_token(token: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def verify_meta_token(token: str) -> Optional[Dict[str, Any]]:
-    """Verify Meta (Facebook) OAuth token and return user info."""
+def verify_bgg_username(username: str) -> Optional[Dict[str, Any]]:
+    """Verify BGG username exists and return user info."""
+    import xml.etree.ElementTree as ET
+
+    # Sanitize username
+    username = username.strip()
+    if not username:
+        return None
+
+    # Verify user by checking if we can access their collection
+    # This is more reliable than the user endpoint which may return empty responses
+    if BEARER_TOKEN:
+        try:
+            collection_url = "https://boardgamegeek.com/xmlapi2/collection"
+            headers = {"Authorization": f"Bearer {BEARER_TOKEN}", "Accept": "application/xml"}
+            params = {"username": username, "own": "1", "stats": "0", "subtype": "boardgame"}
+
+            response = requests.get(collection_url, params=params, headers=headers, timeout=10)
+
+            if response.status_code == 200:
+                try:
+                    root = ET.fromstring(response.content)
+                    # If we get valid XML (even empty), user exists
+                    if root.tag == "items" or root.tag == "collection":
+                        return {
+                            "oauth_id": username,
+                            "email": None,
+                            "username": username,
+                        }
+                except ET.ParseError:
+                    pass
+            elif response.status_code == 404:
+                return None
+        except requests.RequestException:
+            pass
+
+    # Fallback: Try user endpoint
+    if BEARER_TOKEN:
+        headers = {"Authorization": f"Bearer {BEARER_TOKEN}", "Accept": "application/xml"}
+    else:
+        headers = {"Accept": "application/xml"}
+
     try:
-        response = requests.get(f"https://graph.facebook.com/me?fields=id,name,email&access_token={token}")
+        url = f"https://boardgamegeek.com/xmlapi2/user?name={username}"
+        response = requests.get(url, headers=headers, timeout=10)
+
         if response.status_code == 200:
-            data = response.json()
-            return {
-                "oauth_id": data.get("id"),
-                "email": data.get("email"),
-                "username": data.get("name") or data.get("email"),
-            }
-    except Exception:
+            try:
+                root = ET.fromstring(response.content)
+                user_elem = root.find("user") or root.find(".//user")
+                if user_elem is not None and user_elem.get("id"):
+                    return {
+                        "oauth_id": username,
+                        "email": None,
+                        "username": username,
+                    }
+                # If 200 with empty response but bearer token was used, accept as valid
+                if BEARER_TOKEN and len(root) == 0:
+                    return {
+                        "oauth_id": username,
+                        "email": None,
+                        "username": username,
+                    }
+            except ET.ParseError:
+                pass
+    except requests.RequestException:
         pass
+
     return None

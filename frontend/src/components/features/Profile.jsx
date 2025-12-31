@@ -43,8 +43,34 @@ function Profile({ user, onUserUpdate }) {
   // Update username and bggId when user prop changes
   useEffect(() => {
     setUsername(user.username || "");
-    setBggId(user.bgg_id || "");
-  }, [user.username, user.bgg_id]);
+    // Auto-fill BGG ID if user logged in with BGG and BGG ID is not set
+    if (user.oauth_provider === "bgg" && !user.bgg_id && user.username) {
+      // Use username as BGG ID for BGG users
+      setBggId(user.username);
+      // Auto-update BGG ID in backend
+      const updateBggId = async () => {
+        try {
+          const res = await httpRequest(`${API_BASE}/profile/bgg-id`, {
+            method: "PUT",
+            headers: {
+              ...authService.getAuthHeaders(),
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ bgg_id: user.username }),
+          });
+          if (res.ok && onUserUpdate) {
+            await onUserUpdate();
+          }
+        } catch (err) {
+          console.debug("Failed to auto-update BGG ID:", err);
+        }
+      };
+      updateBggId();
+    } else {
+      setBggId(user.bgg_id || "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.username, user.bgg_id, user.oauth_provider]);
 
   const handleSearch = async (query) => {
     setSearchQuery(query);
